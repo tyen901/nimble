@@ -1,13 +1,17 @@
 use crate::commands::gen_srf::gen_srf_for_mod;
 use crate::mod_cache::ModCache;
 use crate::{repository, srf};
-use indicatif::{ProgressBar, ProgressState, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use snafu::{ResultExt, Snafu};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 use tempfile::tempfile;
+use rayon::prelude::*;
+use rayon::ThreadPoolBuilder;
+use indicatif::style::TemplateError;
+
 
 #[derive(Debug)]
 struct DownloadCommand {
@@ -20,6 +24,7 @@ struct DownloadCommand {
 pub enum Error {
     #[snafu(display("io error: {}", source))]
     Io { source: std::io::Error },
+    Template { source: TemplateError },
     #[snafu(display("Error while requesting repository data: {}", source))]
     Http {
         url: String,
@@ -37,6 +42,12 @@ pub enum Error {
     SrfGeneration { source: srf::Error },
     #[snafu(display("Failed to open ModCache: {}", source))]
     ModCacheOpen { source: crate::mod_cache::Error },
+}
+
+impl From<TemplateError> for Error {
+    fn from(error: TemplateError) -> Self {
+        Error::Template { source: error }
+    }
 }
 
 fn diff_repo<'a>(
@@ -188,46 +199,83 @@ fn execute_command_list(
     local_base: &Path,
     commands: &[DownloadCommand],
 ) -> Result<(), Error> {
-    for (i, command) in commands.iter().enumerate() {
-        println!("downloading {} of {} - {}", i, commands.len(), command.file);
 
-        // download into temp file first in case we have a failure. this avoids us writing garbage data
-        // which will later make us crash in gen_srf
-        let mut temp_download_file = tempfile().context(IoSnafu)?;
+    let m = MultiProgress::new();
 
-        let remote_url = format!("{}{}", remote_base, command.file);
+    let style_overall = ProgressStyle::default_bar()
+        .template("{spinner:.yellow} [{elapsed_precise}] {prefix:.bold.dim} [{wide_bar:.white/blue}] {bytes}/{total_bytes} (")?
+        .progress_chars("#>-");
 
-        let response = agent.get(&remote_url).call().context(HttpSnafu {
-            url: remote_url.clone(),
-        })?;
+    let style = ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] {prefix:.bold.dim} [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta}) {msg}")?
+        .progress_chars("#>-");
 
-        let pb = response
-            .header("Content-Length")
-            .and_then(|len| len.parse().ok())
-            .map_or_else(ProgressBar::new_spinner, ProgressBar::new);
+    let num_threads = 4; // Set the number of threads you want here
+    let pool = ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .build()
+        .unwrap();
 
-        pb.set_style(ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
-            .unwrap()
-            .with_key("eta", |state: &ProgressState, w: &mut dyn std::fmt::Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
-            .progress_chars("#>-"));
+    let total_download_size: u64 = commands.iter().map(|c| c.end - c.begin).sum();
 
-        let reader = response.into_reader();
+    // Create an overall progress bar
+    let overall_pb = m.add(ProgressBar::new(total_download_size));
+    overall_pb.set_style(style_overall.clone());
+    overall_pb.set_prefix("Overall");
 
-        std::io::copy(&mut pb.wrap_read(reader), &mut temp_download_file).context(IoSnafu)?;
+    pool.install(|| {
+        commands.par_iter().enumerate().try_for_each(|(_i, command)| {
+            
+            let file_name = Path::new(&command.file).file_name().unwrap().to_str().unwrap();
 
-        // copy from temp to permanent file
-        let file_path = local_base.join(Path::new(&command.file));
-        std::fs::create_dir_all(file_path.parent().expect("file_path did not have a parent"))
-            .context(IoSnafu)?;
-        let mut local_file = File::create(&file_path).context(IoSnafu)?;
+            let pb = m.add(ProgressBar::new(0));
+            pb.set_style(style.clone());
+            pb.set_length(0);
+            pb.set_prefix(format!("{}", file_name));
+            pb.set_message("...");
 
-        temp_download_file
-            .seek(SeekFrom::Start(0))
-            .context(IoSnafu)?;
-        std::io::copy(&mut temp_download_file, &mut local_file).context(IoSnafu)?;
-    }
+            // which will later make us crash in gen_srf
+            let mut temp_download_file = tempfile().context(IoSnafu)?;
 
-    Ok(())
+            let remote_url = format!("{}{}", remote_base, command.file);
+
+            let response = agent.get(&remote_url).call().context(HttpSnafu {
+                url: remote_url.clone(),
+            })?;
+
+            let total_size = response.header("Content-Length")
+                .and_then(|len| len.parse().ok())
+                .unwrap_or(0);
+
+            // Get the name of the file
+            pb.set_length(total_size);
+            pb.set_message("Downloading...");
+
+            let reader = response.into_reader();
+
+            std::io::copy(&mut pb.wrap_read(reader), &mut temp_download_file).context(IoSnafu)?;
+
+            // copy from temp to permanent file
+            let file_path = local_base.join(Path::new(&command.file));
+            std::fs::create_dir_all(file_path.parent().expect("file_path did not have a parent"))
+                .context(IoSnafu)?;
+            let mut local_file = File::create(&file_path).context(IoSnafu)?;
+
+            temp_download_file
+                .seek(SeekFrom::Start(0))
+                .context(IoSnafu)?;
+
+            std::io::copy(&mut temp_download_file, &mut local_file).context(IoSnafu)?;
+
+            // Update the overall progress bar
+            overall_pb.inc(total_size);
+
+            pb.finish();
+            m.remove(&pb);
+
+            Ok(())
+        })
+    })
 }
 
 pub fn sync(
