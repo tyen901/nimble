@@ -153,16 +153,6 @@ impl eframe::App for NimbleApp {
                     });
                 }
             }
-
-            ui.separator();
-
-            ui.collapsing("Local Mods", |ui| {
-                for mod_entry in &self.mods {
-                    ui.label(&mod_entry.name);
-                    ui.label(format!("Checksum: {}", hex::encode(mod_entry.checksum.as_bytes())));
-                    ui.separator();
-                }
-            });
         });
 
         // Request a redraw to ensure the UI updates
