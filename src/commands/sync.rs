@@ -10,6 +10,7 @@ use tempfile::NamedTempFile;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
 use std::time::Instant;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub trait ProgressReporter: Send + Sync {
     fn set_stage(&self, stage: &str);
@@ -89,7 +90,14 @@ fn diff_mod(
     repo_base_path: &str,
     local_base_path: &Path,
     remote_mod: &repository::Mod,
+    cancel_flag: &AtomicBool,
 ) -> Result<Vec<DownloadCommand>, Error> {
+    if cancel_flag.load(Ordering::SeqCst) {
+        return Err(Error::Io { 
+            source: std::io::Error::new(std::io::ErrorKind::Interrupted, "sync cancelled") 
+        });
+    }
+
     // HACK HACK: this REALLY should be parsed through streaming rather than through buffering the whole thing
     let remote_srf_url = format!("{}{}/mod.srf", repo_base_path, remote_mod.mod_name);
     let mut remote_srf = agent
@@ -214,7 +222,8 @@ fn execute_command_list(
     local_base: &Path,
     commands: &[DownloadCommand],
     progress: &dyn ProgressReporter,
-    threads: usize,  // Add threads parameter
+    threads: usize,
+    cancel_flag: &AtomicBool,
 ) -> Result<(), Error> {
     let pool = ThreadPoolBuilder::new()
         .num_threads(threads)  // Use configured thread count
@@ -227,7 +236,12 @@ fn execute_command_list(
     progress.set_total_files(commands.len(), total_download_size, total_repo_size);
 
     pool.install(|| {
-        commands.par_iter().enumerate().try_for_each(|(_i, command)| {
+        commands.par_iter().try_for_each(|command| {
+            if cancel_flag.load(Ordering::SeqCst) {
+                return Err(Error::Io { 
+                    source: std::io::Error::new(std::io::ErrorKind::Interrupted, "sync cancelled") 
+                });
+            }
             
             let file_name = Path::new(&command.file).file_name().unwrap().to_str().unwrap();
             let mut last_update = Instant::now();
@@ -261,6 +275,12 @@ fn execute_command_list(
                 let mut writer = BufWriter::new(temp_download_file.as_file_mut());
                 
                 loop {
+                    if cancel_flag.load(Ordering::SeqCst) {
+                        return Err(Error::Io { 
+                            source: std::io::Error::new(std::io::ErrorKind::Interrupted, "sync cancelled") 
+                        });
+                    }
+
                     match reader.read(&mut buffer) {
                         Ok(0) => break,
                         Ok(n) => {
@@ -291,14 +311,17 @@ fn execute_command_list(
                 writer.flush().context(IoSnafu)?;
             } // writer is dropped here, releasing the borrow
 
-            progress.file_completed(file_name);
+            // Only complete the file if we weren't cancelled
+            if !cancel_flag.load(Ordering::SeqCst) {
+                progress.file_completed(file_name);
 
-            // Move temp file to final location
-            let file_path = local_base.join(Path::new(&command.file));
-            std::fs::create_dir_all(file_path.parent().expect("file_path did not have a parent"))
-                .context(IoSnafu)?;
-            
-            std::fs::rename(temp_download_file.path(), &file_path).context(IoSnafu)?;
+                // Move temp file to final location
+                let file_path = local_base.join(Path::new(&command.file));
+                std::fs::create_dir_all(file_path.parent().expect("file_path did not have a parent"))
+                    .context(IoSnafu)?;
+                
+                std::fs::rename(temp_download_file.path(), &file_path).context(IoSnafu)?;
+            }
 
             Ok(())
         })
@@ -312,12 +335,17 @@ pub fn sync(
     dry_run: bool,
     progress: &dyn ProgressReporter,
     threads: usize,
+    cancel_flag: &AtomicBool,
 ) -> Result<(), Error> {
     progress.set_stage("Fetching repository info");
+    if cancel_flag.load(Ordering::SeqCst) { return Ok(()); }
+    
     let remote_repo = repository::get_repository_info(agent, &format!("{repo_url}/repo.json"))
         .context(RepositoryFetchSnafu)?;
 
     progress.set_stage("Loading mod cache");
+    if cancel_flag.load(Ordering::SeqCst) { return Ok(()); }
+    
     let mut mod_cache = ModCache::from_disk_or_empty(base_path).context(ModCacheOpenSnafu)?;
 
     progress.set_stage("Checking for updates");
@@ -331,12 +359,19 @@ pub fn sync(
     }
 
     progress.set_stage("Calculating required downloads");
+    if cancel_flag.load(Ordering::SeqCst) { return Ok(()); }
     
-    // Parallelize mod diffing
+    // Parallelize mod diffing with cancellation support
     let download_commands: Vec<_> = check.par_iter()
-        .filter_map(|m| diff_mod(agent, repo_url, base_path, m).ok())
+        .filter_map(|m| diff_mod(agent, repo_url, base_path, m, cancel_flag).ok())
+        .filter(|r| !cancel_flag.load(Ordering::SeqCst)) // Skip remaining items if cancelled
         .flatten()
         .collect();
+
+    if cancel_flag.load(Ordering::SeqCst) {
+        progress.set_stage("Sync cancelled");
+        return Ok(());
+    }
 
     println!("download commands: {download_commands:#?}");
 
@@ -345,23 +380,31 @@ pub fn sync(
     }
 
     progress.set_stage("Downloading files");
-    let res = execute_command_list(agent, repo_url, base_path, &download_commands, progress, threads);  // Pass threads parameter
+    if cancel_flag.load(Ordering::SeqCst) { return Ok(()); }
+    
+    let res = execute_command_list(agent, repo_url, base_path, &download_commands, progress, threads, cancel_flag);
 
-    if let Err(e) = res {
-        println!("an error occured while downloading: {e}");
-        println!("you should retry this command");
+    match res {
+        Ok(_) => {
+            if !cancel_flag.load(Ordering::SeqCst) {
+                // Only update cache if not cancelled
+                for r#mod in &check {
+                    let srf = gen_srf_for_mod(&base_path.join(Path::new(&r#mod.mod_name)));
+                    mod_cache.insert(srf);
+                }
+
+                let writer = BufWriter::new(File::create(base_path.join("nimble-cache.json")).unwrap());
+                serde_json::to_writer(writer, &mod_cache).unwrap();
+            }
+            Ok(())
+        }
+        Err(Error::Io { source }) if source.kind() == std::io::ErrorKind::Interrupted => {
+            progress.set_stage("Sync cancelled");
+            Ok(())
+        }
+        Err(e) => {
+            progress.set_stage("Error occurred while downloading");
+            Err(e)
+        }
     }
-
-    // gen_srf for the mods we downloaded
-    for r#mod in &check {
-        let srf = gen_srf_for_mod(&base_path.join(Path::new(&r#mod.mod_name)));
-
-        mod_cache.insert(srf);
-    }
-
-    // reserialize the cache
-    let writer = BufWriter::new(File::create(base_path.join("nimble-cache.json")).unwrap());
-    serde_json::to_writer(writer, &mod_cache).unwrap();
-
-    Ok(())
 }

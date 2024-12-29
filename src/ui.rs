@@ -2,6 +2,7 @@ use eframe::egui;
 use egui::ViewportBuilder;
 use crate::{repository, srf, config::Config, commands::sync::ProgressReporter};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -101,6 +102,23 @@ impl Default for SyncProgress {
     }
 }
 
+impl SyncProgress {
+    fn is_complete(&self) -> bool {
+        self.total_files > 0 && self.completed_files.len() == self.total_files
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.current_stage == "Sync cancelled"
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum SyncState {
+    Idle,
+    Running,
+    Cancelling,
+}
+
 pub struct NimbleApp {
     repository: Option<repository::Repository>,
     mods: Vec<srf::Mod>,
@@ -108,6 +126,9 @@ pub struct NimbleApp {
     config: Config,
     agent: ureq::Agent,
     sync_progress: Option<Arc<Mutex<SyncProgress>>>,
+    is_syncing: bool,
+    cancel_sync: Arc<AtomicBool>,
+    sync_state: SyncState,
 }
 
 impl Default for NimbleApp {
@@ -120,6 +141,9 @@ impl Default for NimbleApp {
             agent: ureq::AgentBuilder::new()
                 .build(),
             sync_progress: None,
+            is_syncing: false,
+            cancel_sync: Arc::new(AtomicBool::new(false)),
+            sync_state: SyncState::Idle,
         }
     }
 }
@@ -163,14 +187,17 @@ impl eframe::App for NimbleApp {
 
             ui.horizontal(|ui| {
                 ui.label("Repository URL:");
-                if ui.text_edit_singleline(&mut self.config.repo_url).changed() {
+                let response = ui.text_edit_singleline(&mut self.config.repo_url);
+                if response.changed() && !self.is_syncing {
                     self.config.save().ok();
                 }
             });
+
             ui.horizontal(|ui| {
                 ui.label("Local Path:");
-                ui.text_edit_singleline(&mut self.config.local_path);
-                if ui.button("Browse...").clicked() {
+                ui.text_edit_singleline(&mut self.config.local_path)
+                    .changed();  // consume the response
+                if ui.add_enabled(!self.is_syncing, egui::Button::new("Browse...")).clicked() {
                     if let Some(path) = rfd::FileDialog::new().pick_folder() {
                         self.config.local_path = path.display().to_string();
                         self.config.save().ok();
@@ -180,113 +207,166 @@ impl eframe::App for NimbleApp {
 
             ui.horizontal(|ui| {
                 ui.label("Download Threads:");
-                if ui.add(egui::DragValue::new(&mut self.config.download_threads)
-                    .clamp_range(1..=32)
-                ).changed() {
+                let response = ui.add_enabled(
+                    !self.is_syncing,
+                    egui::DragValue::new(&mut self.config.download_threads)
+                        .clamp_range(1..=32)
+                );
+                if response.changed() {
                     self.config.save().ok();
                 }
             });
 
-            if ui.button("Synchronize").clicked() {
-                let local_path = self.config.local_path.clone();
-                let repo_url = self.config.repo_url.clone();
-                let mut agent = self.agent.clone();
-                let progress = Arc::new(Mutex::new(SyncProgress::default()));
-                self.sync_progress = Some(progress.clone());
-                let threads = self.config.download_threads;
-                
-                std::thread::spawn(move || {
-                    let path = std::path::Path::new(&local_path);
-                    let _ = crate::commands::sync::sync(&mut agent, &repo_url, path, false, &progress, threads);
-                });
-            }
+            ui.horizontal(|ui| {
+                let can_sync = self.sync_state == SyncState::Idle;
+                let can_cancel = self.sync_state == SyncState::Running;
 
-            // Show sync progress if available
-            if let Some(progress) = &self.sync_progress {
-                ui.separator();
-                let progress = progress.lock().unwrap();
-                
-                ui.heading(&progress.current_stage);
-                
-                if progress.total_files > 0 {
-                    ui.vertical(|ui| {
-                        ui.label(format!(
-                            "Files: {}/{}",
-                            progress.completed_files.len(),
-                            progress.total_files,
-                        ));
-                        ui.label(format!(
-                            "Repository size: {}",
-                            format_size(progress.total_repo_size)
-                        ));
-                        ui.label(format!(
-                            "Download size: {}",
-                            format_size(progress.total_download_size)
-                        ));
-                        
-                        // Calculate overall progress and time estimate
-                        let bytes_downloaded = progress.total_bytes_downloaded;
-                        let total_size = progress.total_download_size;
-                        
-                        if bytes_downloaded > 0 {
-                            // Calculate overall progress
-                            let progress_frac = bytes_downloaded as f32 / total_size as f32;
-                            
-                            // Add overall progress bar
-                            ui.add(egui::ProgressBar::new(progress_frac)
-                                .show_percentage()
-                                .animate(true));
+                if ui.add_enabled(can_sync, egui::Button::new("Synchronize")).clicked() {
+                    self.sync_state = SyncState::Running;
+                    let local_path = self.config.local_path.clone();
+                    let repo_url = self.config.repo_url.clone();
+                    let mut agent = self.agent.clone();
+                    let progress = Arc::new(Mutex::new(SyncProgress::default()));
+                    self.sync_progress = Some(progress.clone());
+                    let threads = self.config.download_threads;
+                    let cancel_flag = self.cancel_sync.clone();
+                    self.cancel_sync.store(false, Ordering::SeqCst);
+                    
+                    std::thread::spawn(move || {
+                        let path = std::path::Path::new(&local_path);
+                        let result = crate::commands::sync::sync(
+                            &mut agent, 
+                            &repo_url, 
+                            path, 
+                            false, 
+                            &progress, 
+                            threads,
+                            &cancel_flag
+                        );
 
-                            // Calculate smooth speed from samples
-                            let (speed, eta) = if progress.speed_samples.len() >= 2 {
-                                let (oldest_time, oldest_bytes) = progress.speed_samples.first().unwrap();
-                                let (latest_time, latest_bytes) = progress.speed_samples.last().unwrap();
-                                
-                                let elapsed = latest_time.duration_since(*oldest_time).as_secs_f64();
-                                let bytes_delta = latest_bytes - oldest_bytes;
-                                
-                                let speed = bytes_delta as f64 / elapsed;
-                                let remaining_bytes = total_size - bytes_downloaded;
-                                let eta = remaining_bytes as f64 / speed;
-                                
-                                (speed, eta)
-                            } else {
-                                (0.0, 0.0)
-                            };
-
-                            ui.label(format!(
-                                "Overall progress: {} / {}",
-                                format_size(bytes_downloaded),
-                                format_size(total_size),
-                            ));
-                            
-                            ui.label(format!(
-                                "Average speed: {:.1} MB/s",
-                                speed / 1_000_000.0
-                            ));
-                            
-                            if speed > 0.0 {
-                                ui.label(format!(
-                                    "Estimated time remaining: {}",
-                                    format_duration(eta)
-                                ));
+                        // Ensure we set final state even if sync returns early
+                        if cancel_flag.load(Ordering::SeqCst) {
+                            if let Ok(mut guard) = progress.lock() {
+                                guard.current_stage = "Sync cancelled".to_string();
                             }
                         }
                     });
                 }
+
+                if ui.add_enabled(can_cancel, egui::Button::new("Cancel")).clicked() {
+                    self.cancel_sync.store(true, Ordering::SeqCst);
+                    self.sync_state = SyncState::Cancelling;
+                }
+
+                if self.sync_state == SyncState::Cancelling {
+                    ui.spinner();
+                    ui.label("Cancelling...");
+                }
+            });
+
+            // Show sync progress if available
+            if let Some(progress) = &self.sync_progress {
+                ui.separator();
                 
-                for (filename, task) in &progress.tasks {
-                    ui.group(|ui| {
-                        ui.label(filename);
-                        let progress_frac = task.bytes as f32 / task.total as f32;
-                        ui.add(egui::ProgressBar::new(progress_frac));
-                        ui.label(format!(
-                            "{}/{} @ {:.1} MB/s",
-                            format_size(task.bytes),
-                            format_size(task.total),
-                            task.speed / 1_000_000.0
-                        ));
-                    });
+                // Use scope to control lock lifetime
+                {
+                    let progress_guard = progress.lock().unwrap();
+                    ui.heading(&progress_guard.current_stage);
+
+                    // Check completion conditions
+                    if progress_guard.is_cancelled() || progress_guard.is_complete() {
+                        self.sync_state = SyncState::Idle;
+                        drop(progress_guard);
+                        self.sync_progress = None;
+                        return;
+                    }
+
+                    // Show progress if we have data
+                    if progress_guard.total_files > 0 {
+                        // Rest of the progress display code, using progress_guard instead of progress
+                        ui.vertical(|ui| {
+                            if progress_guard.total_files > 0 {
+                                ui.vertical(|ui| {
+                                    ui.label(format!(
+                                        "Files: {}/{}",
+                                        progress_guard.completed_files.len(),
+                                        progress_guard.total_files,
+                                    ));
+                                    ui.label(format!(
+                                        "Repository size: {}",
+                                        format_size(progress_guard.total_repo_size)
+                                    ));
+                                    ui.label(format!(
+                                        "Download size: {}",
+                                        format_size(progress_guard.total_download_size)
+                                    ));
+                                    
+                                    // Calculate overall progress and time estimate
+                                    let bytes_downloaded = progress_guard.total_bytes_downloaded;
+                                    let total_size = progress_guard.total_download_size;
+                                    
+                                    if bytes_downloaded > 0 {
+                                        // Calculate overall progress
+                                        let progress_frac = bytes_downloaded as f32 / total_size as f32;
+                                        
+                                        // Add overall progress bar
+                                        ui.add(egui::ProgressBar::new(progress_frac)
+                                            .show_percentage()
+                                            .animate(true));
+
+                                        // Calculate smooth speed from samples
+                                        let (speed, eta) = if progress_guard.speed_samples.len() >= 2 {
+                                            let (oldest_time, oldest_bytes) = progress_guard.speed_samples.first().unwrap();
+                                            let (latest_time, latest_bytes) = progress_guard.speed_samples.last().unwrap();
+                                            
+                                            let elapsed = latest_time.duration_since(*oldest_time).as_secs_f64();
+                                            let bytes_delta = latest_bytes - oldest_bytes;
+                                            
+                                            let speed = bytes_delta as f64 / elapsed;
+                                            let remaining_bytes = total_size - bytes_downloaded;
+                                            let eta = remaining_bytes as f64 / speed;
+                                            
+                                            (speed, eta)
+                                        } else {
+                                            (0.0, 0.0)
+                                        };
+
+                                        ui.label(format!(
+                                            "Overall progress: {} / {}",
+                                            format_size(bytes_downloaded),
+                                            format_size(total_size),
+                                        ));
+                                        
+                                        ui.label(format!(
+                                            "Average speed: {:.1} MB/s",
+                                            speed / 1_000_000.0
+                                        ));
+                                        
+                                        if speed > 0.0 {
+                                            ui.label(format!(
+                                                "Estimated time remaining: {}",
+                                                format_duration(eta)
+                                            ));
+                                        }
+                                    }
+                                });
+                            }
+                            
+                            for (filename, task) in &progress_guard.tasks {
+                                ui.group(|ui| {
+                                    ui.label(filename);
+                                    let progress_frac = task.bytes as f32 / task.total as f32;
+                                    ui.add(egui::ProgressBar::new(progress_frac));
+                                    ui.label(format!(
+                                        "{}/{} @ {:.1} MB/s",
+                                        format_size(task.bytes),
+                                        format_size(task.total),
+                                        task.speed / 1_000_000.0
+                                    ));
+                                });
+                            }
+                        });
+                    }
                 }
             }
         });
