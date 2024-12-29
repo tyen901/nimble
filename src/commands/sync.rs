@@ -4,9 +4,9 @@ use crate::{repository, srf};
 use snafu::{ResultExt, Snafu};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, BufWriter, Cursor, Read, Write};
 use std::path::Path;
-use tempfile::tempfile;
+use tempfile::NamedTempFile;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
 use std::time::Instant;
@@ -62,11 +62,15 @@ impl From<std::io::Error> for Error {
     }
 }
 
+const CHUNK_SIZE: usize = 1024 * 1024; // 1MB chunks
+const DOWNLOAD_BUFFER_SIZE: usize = 8192 * 16; // 128KB buffer
+
 fn diff_repo<'a>(
     mod_cache: &ModCache,
     remote_repo: &'a repository::Repository,
 ) -> Vec<&'a repository::Mod> {
-    let mut downloads = Vec::new();
+    // Pre-allocate with estimated size
+    let mut downloads = Vec::with_capacity(remote_repo.required_mods.len());
 
     // repo checksums use the repo generation timestamp in the checksum calculation, so we can't really
     // generate them for comparison. they aren't that useful anyway
@@ -96,7 +100,7 @@ fn diff_mod(
         })?
         .into_reader();
 
-    let mut buf = String::new();
+    let mut buf = String::with_capacity(8192); // Pre-allocate with reasonable size
     let _len = remote_srf.read_to_string(&mut buf).context(IoSnafu)?;
 
     // yeet utf-8 bom, which is bad, not very useful and not supported by serde
@@ -143,19 +147,18 @@ fn diff_mod(
         return Ok(vec![]);
     }
 
-    let mut local_files = HashMap::new();
+    // Pre-allocate hashmaps with known sizes
+    let mut local_files = HashMap::with_capacity(local_srf.files.len());
+    let mut remote_files = HashMap::with_capacity(remote_srf.files.len());
+    let mut download_list = Vec::with_capacity(remote_srf.files.len());
 
     for file in &local_srf.files {
         local_files.insert(&file.path, file);
     }
 
-    let mut remote_files = HashMap::new();
-
     for file in &remote_srf.files {
         remote_files.insert(&file.path, file);
     }
-
-    let mut download_list = Vec::new();
 
     for (path, file) in remote_files.drain() {
         let local_file = local_files.remove(path);
@@ -212,7 +215,10 @@ fn execute_command_list(
     commands: &[DownloadCommand],
     progress: &dyn ProgressReporter,
 ) -> Result<(), Error> {
-    let num_threads = 4; // Set the number of threads you want here
+    let num_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+
     let pool = ThreadPoolBuilder::new()
         .num_threads(num_threads)
         .build()
@@ -230,7 +236,10 @@ fn execute_command_list(
             let mut last_bytes = 0u64;
 
             // which will later make us crash in gen_srf
-            let mut temp_download_file = tempfile().context(IoSnafu)?;
+            let mut temp_download_file = NamedTempFile::new().context(IoSnafu)?;
+            
+            // Pre-allocate file with required size
+            temp_download_file.as_file_mut().set_len(command.end).context(IoSnafu)?;
 
             let remote_url = format!("{}{}", remote_base, command.file);
 
@@ -247,49 +256,51 @@ fn execute_command_list(
             let mut reader = response.into_reader();
 
             let mut current_progress = 0u64;
-            let mut buffer = vec![0u8; 8192];
+            let mut buffer = vec![0u8; DOWNLOAD_BUFFER_SIZE];
             
-            loop {
-                match reader.read(&mut buffer) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        temp_download_file.write_all(&buffer[..n]).context(IoSnafu)?;
-                        current_progress += n as u64;
-                        
-                        // Update speed calculation every 100ms
-                        if last_update.elapsed().as_millis() > 100 {
-                            let elapsed = last_update.elapsed().as_secs_f64();
-                            let bytes_since_last = current_progress - last_bytes;
-                            let speed = bytes_since_last as f64 / elapsed;
+            // Use buffered writes
+            {
+                let mut writer = BufWriter::new(temp_download_file.as_file_mut());
+                
+                loop {
+                    match reader.read(&mut buffer) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            writer.write_all(&buffer[..n]).context(IoSnafu)?;
+                            current_progress += n as u64;
                             
-                            progress.update_file_progress(
-                                file_name,
-                                current_progress,
-                                total_size,
-                                speed
-                            );
-                            
-                            last_update = Instant::now();
-                            last_bytes = current_progress;
+                            // Update speed calculation every 100ms
+                            if last_update.elapsed().as_millis() > 100 {
+                                let elapsed = last_update.elapsed().as_secs_f64();
+                                let bytes_since_last = current_progress - last_bytes;
+                                let speed = bytes_since_last as f64 / elapsed;
+                                
+                                progress.update_file_progress(
+                                    file_name,
+                                    current_progress,
+                                    total_size,
+                                    speed
+                                );
+                                
+                                last_update = Instant::now();
+                                last_bytes = current_progress;
+                            }
                         }
+                        Err(e) => return Err(Error::Io { source: e }),
                     }
-                    Err(e) => return Err(Error::Io { source: e }),
                 }
-            }
+                
+                writer.flush().context(IoSnafu)?;
+            } // writer is dropped here, releasing the borrow
 
             progress.file_completed(file_name);
 
-            // copy from temp to permanent file
+            // Move temp file to final location
             let file_path = local_base.join(Path::new(&command.file));
             std::fs::create_dir_all(file_path.parent().expect("file_path did not have a parent"))
                 .context(IoSnafu)?;
-            let mut local_file = File::create(&file_path).context(IoSnafu)?;
-
-            temp_download_file
-                .seek(SeekFrom::Start(0))
-                .context(IoSnafu)?;
-
-            std::io::copy(&mut temp_download_file, &mut local_file).context(IoSnafu)?;
+            
+            std::fs::rename(temp_download_file.path(), &file_path).context(IoSnafu)?;
 
             Ok(())
         })
@@ -321,11 +332,12 @@ pub fn sync(
     }
 
     progress.set_stage("Calculating required downloads");
-    let mut download_commands = vec![];
-
-    for r#mod in &check {
-        download_commands.extend(diff_mod(agent, repo_url, base_path, r#mod).unwrap());
-    }
+    
+    // Parallelize mod diffing
+    let download_commands: Vec<_> = check.par_iter()
+        .filter_map(|m| diff_mod(agent, repo_url, base_path, m).ok())
+        .flatten()
+        .collect();
 
     println!("download commands: {download_commands:#?}");
 
