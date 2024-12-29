@@ -8,6 +8,8 @@ mod mod_cache;
 mod pbo;
 mod repository;
 mod srf;
+mod ui;
+mod config;
 
 #[derive(Subcommand)]
 enum Commands {
@@ -37,26 +39,6 @@ struct Args {
     command: Commands,
 }
 
-fn main() {
-    let args = Args::parse();
-
-    let mut agent = ureq::AgentBuilder::new()
-        .user_agent("nimble (like Swifty)/0.1")
-        .build();
-
-    match args.command {
-        Commands::Sync {
-            repo_url,
-            path,
-            dry_run,
-        } => {
-            commands::sync::sync(&mut agent, &repo_url, &path, dry_run).unwrap();
-        }
-        Commands::GenSrf { path } => {
-            commands::gen_srf::gen_srf(&path);
-        }
-        Commands::Launch { path } => {
-            commands::launch::launch(&path).unwrap();
-        }
-    }
+fn main() -> Result<(), eframe::Error> {
+    ui::run_ui()
 }

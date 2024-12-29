@@ -23,3 +23,7 @@ hex = "0.4"
 open = "3"
 percent-encoding = "2"
 # tinyvec = { version = "1.5", features = ["alloc", "rustc_1_55"] }
+egui = "0.30.0"
+eframe = "0.30.0"
+rfd = "0.12"
+dirs = "5.0"

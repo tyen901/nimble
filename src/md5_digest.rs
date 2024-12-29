@@ -25,6 +25,10 @@ impl Md5Digest {
     pub fn from_bytes(bytes: [u8; 16]) -> Self {
         Self { inner: bytes }
     }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.inner
+    }
 }
 
 impl Serialize for Md5Digest {

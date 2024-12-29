@@ -1,0 +1,23 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceRoot}/target/debug/nimble",
+            "args": [],
+            "cwd": "${workspaceRoot}",
+            "preLaunchTask": "build"
+        },
+        {
+            "name": "Release",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceRoot}/target/release/nimble", 
+            "args": [],
+            "cwd": "${workspaceRoot}",
+            "preLaunchTask": "build-release"
+        }
+    ]
+}
