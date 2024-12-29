@@ -1,17 +1,23 @@
 use crate::commands::gen_srf::gen_srf_for_mod;
 use crate::mod_cache::ModCache;
 use crate::{repository, srf};
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use snafu::{ResultExt, Snafu};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom};
+use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use tempfile::tempfile;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
-use indicatif::style::TemplateError;
+use std::time::Instant;
 
+pub trait ProgressReporter: Send + Sync {
+    fn set_stage(&self, stage: &str);
+    fn set_total_files(&self, count: usize, total_size: u64);
+    fn start_task(&self, filename: &str, total: u64);
+    fn update_file_progress(&self, filename: &str, bytes: u64, total: u64, speed: f64);
+    fn file_completed(&self, filename: &str);
+}
 
 #[derive(Debug)]
 struct DownloadCommand {
@@ -24,7 +30,7 @@ struct DownloadCommand {
 pub enum Error {
     #[snafu(display("io error: {}", source))]
     Io { source: std::io::Error },
-    Template { source: TemplateError },
+    Template { source: indicatif::style::TemplateError },
     #[snafu(display("Error while requesting repository data: {}", source))]
     Http {
         url: String,
@@ -44,9 +50,15 @@ pub enum Error {
     ModCacheOpen { source: crate::mod_cache::Error },
 }
 
-impl From<TemplateError> for Error {
-    fn from(error: TemplateError) -> Self {
+impl From<indicatif::style::TemplateError> for Error {
+    fn from(error: indicatif::style::TemplateError) -> Self {
         Error::Template { source: error }
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Self {
+        Error::Io { source: error }
     }
 }
 
@@ -198,18 +210,8 @@ fn execute_command_list(
     remote_base: &str,
     local_base: &Path,
     commands: &[DownloadCommand],
+    progress: &dyn ProgressReporter,
 ) -> Result<(), Error> {
-
-    let m = MultiProgress::new();
-
-    let style_overall = ProgressStyle::default_bar()
-        .template("{spinner:.yellow} [{elapsed_precise}] {prefix:.bold.dim} [{wide_bar:.white/blue}] {bytes}/{total_bytes} (")?
-        .progress_chars("#>-");
-
-    let style = ProgressStyle::default_bar()
-        .template("{spinner:.green} [{elapsed_precise}] {prefix:.bold.dim} [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta}) {msg}")?
-        .progress_chars("#>-");
-
     let num_threads = 4; // Set the number of threads you want here
     let pool = ThreadPoolBuilder::new()
         .num_threads(num_threads)
@@ -218,21 +220,14 @@ fn execute_command_list(
 
     let total_download_size: u64 = commands.iter().map(|c| c.end - c.begin).sum();
 
-    // Create an overall progress bar
-    let overall_pb = m.add(ProgressBar::new(total_download_size));
-    overall_pb.set_style(style_overall.clone());
-    overall_pb.set_prefix("Overall");
+    progress.set_total_files(commands.len(), total_download_size);
 
     pool.install(|| {
         commands.par_iter().enumerate().try_for_each(|(_i, command)| {
             
             let file_name = Path::new(&command.file).file_name().unwrap().to_str().unwrap();
-
-            let pb = m.add(ProgressBar::new(0));
-            pb.set_style(style.clone());
-            pb.set_length(0);
-            pb.set_prefix(format!("{}", file_name));
-            pb.set_message("...");
+            let mut last_update = Instant::now();
+            let mut last_bytes = 0u64;
 
             // which will later make us crash in gen_srf
             let mut temp_download_file = tempfile().context(IoSnafu)?;
@@ -247,13 +242,42 @@ fn execute_command_list(
                 .and_then(|len| len.parse().ok())
                 .unwrap_or(0);
 
-            // Get the name of the file
-            pb.set_length(total_size);
-            pb.set_message("Downloading...");
+            progress.start_task(file_name, total_size);
 
-            let reader = response.into_reader();
+            let mut reader = response.into_reader();
 
-            std::io::copy(&mut pb.wrap_read(reader), &mut temp_download_file).context(IoSnafu)?;
+            let mut current_progress = 0u64;
+            let mut buffer = vec![0u8; 8192];
+            
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        temp_download_file.write_all(&buffer[..n]).context(IoSnafu)?;
+                        current_progress += n as u64;
+                        
+                        // Update speed calculation every 100ms
+                        if last_update.elapsed().as_millis() > 100 {
+                            let elapsed = last_update.elapsed().as_secs_f64();
+                            let bytes_since_last = current_progress - last_bytes;
+                            let speed = bytes_since_last as f64 / elapsed;
+                            
+                            progress.update_file_progress(
+                                file_name,
+                                current_progress,
+                                total_size,
+                                speed
+                            );
+                            
+                            last_update = Instant::now();
+                            last_bytes = current_progress;
+                        }
+                    }
+                    Err(e) => return Err(Error::Io { source: e }),
+                }
+            }
+
+            progress.file_completed(file_name);
 
             // copy from temp to permanent file
             let file_path = local_base.join(Path::new(&command.file));
@@ -267,12 +291,6 @@ fn execute_command_list(
 
             std::io::copy(&mut temp_download_file, &mut local_file).context(IoSnafu)?;
 
-            // Update the overall progress bar
-            overall_pb.inc(total_size);
-
-            pb.finish();
-            m.remove(&pb);
-
             Ok(())
         })
     })
@@ -283,12 +301,16 @@ pub fn sync(
     repo_url: &str,
     base_path: &Path,
     dry_run: bool,
+    progress: &dyn ProgressReporter,
 ) -> Result<(), Error> {
+    progress.set_stage("Fetching repository info");
     let remote_repo = repository::get_repository_info(agent, &format!("{repo_url}/repo.json"))
         .context(RepositoryFetchSnafu)?;
 
+    progress.set_stage("Loading mod cache");
     let mut mod_cache = ModCache::from_disk_or_empty(base_path).context(ModCacheOpenSnafu)?;
 
+    progress.set_stage("Checking for updates");
     let check = diff_repo(&mod_cache, &remote_repo);
 
     println!("mods to check: {check:#?}");
@@ -298,6 +320,7 @@ pub fn sync(
         mod_cache.remove(&r#mod.checksum);
     }
 
+    progress.set_stage("Calculating required downloads");
     let mut download_commands = vec![];
 
     for r#mod in &check {
@@ -310,7 +333,8 @@ pub fn sync(
         return Ok(());
     }
 
-    let res = execute_command_list(agent, repo_url, base_path, &download_commands);
+    progress.set_stage("Downloading files");
+    let res = execute_command_list(agent, repo_url, base_path, &download_commands, progress);
 
     if let Err(e) = res {
         println!("an error occured while downloading: {e}");
