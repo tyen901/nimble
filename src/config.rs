@@ -6,6 +6,7 @@ use std::fs;
 pub struct Config {
     pub repo_url: String,
     pub local_path: String,
+    pub download_threads: usize,
 }
 
 impl Default for Config {
@@ -13,6 +14,7 @@ impl Default for Config {
         Self {
             repo_url: "http://swifty.peanutcommunityarma.com/".to_string(),
             local_path: String::new(),
+            download_threads: 4,
         }
     }
 }

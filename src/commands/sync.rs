@@ -13,7 +13,7 @@ use std::time::Instant;
 
 pub trait ProgressReporter: Send + Sync {
     fn set_stage(&self, stage: &str);
-    fn set_total_files(&self, count: usize, total_size: u64);
+    fn set_total_files(&self, count: usize, download_size: u64, repo_size: u64);
     fn start_task(&self, filename: &str, total: u64);
     fn update_file_progress(&self, filename: &str, bytes: u64, total: u64, speed: f64);
     fn file_completed(&self, filename: &str);
@@ -214,19 +214,17 @@ fn execute_command_list(
     local_base: &Path,
     commands: &[DownloadCommand],
     progress: &dyn ProgressReporter,
+    threads: usize,  // Add threads parameter
 ) -> Result<(), Error> {
-    let num_threads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4);
-
     let pool = ThreadPoolBuilder::new()
-        .num_threads(num_threads)
+        .num_threads(threads)  // Use configured thread count
         .build()
         .unwrap();
 
     let total_download_size: u64 = commands.iter().map(|c| c.end - c.begin).sum();
+    let total_repo_size: u64 = commands.iter().map(|c| c.end).sum();
 
-    progress.set_total_files(commands.len(), total_download_size);
+    progress.set_total_files(commands.len(), total_download_size, total_repo_size);
 
     pool.install(|| {
         commands.par_iter().enumerate().try_for_each(|(_i, command)| {
@@ -313,6 +311,7 @@ pub fn sync(
     base_path: &Path,
     dry_run: bool,
     progress: &dyn ProgressReporter,
+    threads: usize,
 ) -> Result<(), Error> {
     progress.set_stage("Fetching repository info");
     let remote_repo = repository::get_repository_info(agent, &format!("{repo_url}/repo.json"))
@@ -346,7 +345,7 @@ pub fn sync(
     }
 
     progress.set_stage("Downloading files");
-    let res = execute_command_list(agent, repo_url, base_path, &download_commands, progress);
+    let res = execute_command_list(agent, repo_url, base_path, &download_commands, progress, threads);  // Pass threads parameter
 
     if let Err(e) = res {
         println!("an error occured while downloading: {e}");
