@@ -26,14 +26,14 @@ pub fn open_cache_or_gen_srf(base_path: &Path) -> Result<ModCache, mod_cache::Er
             if source.kind() == std::io::ErrorKind::NotFound =>
         {
             println!("nimble-cache.json not found, generating...");
-            gen_srf(base_path);
+            gen_srf(base_path)?;
             ModCache::from_disk_or_empty(base_path)
         }
         Err(e) => Err(e),
     }
 }
 
-pub fn gen_srf(base_path: &Path) {
+pub fn gen_srf(base_path: &Path) -> Result<(), mod_cache::Error> {
     let mods: HashMap<Md5Digest, srf::Mod> = WalkDir::new(base_path)
         .min_depth(1)
         .max_depth(1)
@@ -49,7 +49,6 @@ pub fn gen_srf(base_path: &Path) {
         })
         .collect();
 
-    let cache = ModCache::new(mods);
-
-    cache.to_disk(base_path).unwrap();
+    let cache = ModCache::new(mods)?;
+    cache.to_disk(base_path)
 }
