@@ -75,6 +75,12 @@ pub struct Repository {
     pub servers: Vec<Server>,
 }
 
+impl Repository {
+    pub fn new(url: &str, agent: &mut ureq::Agent) -> Result<Self, Error> {
+        get_repository_info(agent, url)
+    }
+}
+
 pub fn get_repository_info(agent: &mut ureq::Agent, url: &str) -> Result<Repository, Error> {
     agent
         .get(url)

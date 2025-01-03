@@ -38,18 +38,18 @@ pub struct ModCache {
 }
 
 impl ModCache {
-    pub fn new(mods: HashMap<Md5Digest, SrfMod>) -> Self {
-        Self {
+    pub fn new(mods: HashMap<Md5Digest, SrfMod>) -> Result<Self, Error> {
+        Ok(Self {
             version: 1,
             mods: mods.into_iter().map(|(k, v)| (k, v.into())).collect(),
-        }
+        })
     }
 
-    pub fn new_empty() -> Self {
-        Self {
+    pub fn new_empty() -> Result<Self, Error> {
+        Ok(Self {
             version: 1,
             mods: HashMap::new(),
-        }
+        })
     }
 
     pub fn from_disk(repo_path: &Path) -> Result<Self, Error> {
@@ -68,7 +68,7 @@ impl ModCache {
         match Self::from_disk(repo_path) {
             Ok(cache) => Ok(cache),
             Err(Error::FileOpen { source }) if source.kind() == std::io::ErrorKind::NotFound => {
-                Ok(Self::new_empty())
+                Ok(Self::new_empty()?)
             }
             Err(e) => Err(e),
         }
