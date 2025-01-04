@@ -73,3 +73,31 @@ impl Default for GuiConfig {
         }
     }
 }
+
+impl GuiConfig {
+    pub fn load() -> Self {
+        if let Ok(config_str) = std::fs::read_to_string("nimble_config.json") {
+            serde_json::from_str(&config_str).unwrap_or_default()
+        } else {
+            Self::default()
+        }
+    }
+
+    pub fn save(&self) -> Result<(), std::io::Error> {
+        let config_str = serde_json::to_string_pretty(self)?;
+        std::fs::write("nimble_config.json", config_str)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.base_path.exists() {
+            return Err("Base path does not exist".into());
+        }
+        if !self.base_path.is_dir() {
+            return Err("Base path is not a directory".into());
+        }
+        if self.repo_url.is_empty() {
+            return Err("Repository URL is required".into());
+        }
+        Ok(())
+    }
+}

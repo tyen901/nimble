@@ -1,25 +1,38 @@
 use eframe::egui;
 use crate::commands;
 use crate::gui::state::{CommandMessage, GuiState};
-use std::path::PathBuf;
+use crate::gui::widgets::{PathPicker, StatusDisplay};
 use std::sync::mpsc::Sender;
 use std::thread;
 
 pub struct GenSrfPanel {
-    base_path: String,
+    path_picker: PathPicker,
+    status: StatusDisplay,
 }
 
 impl Default for GenSrfPanel {
     fn default() -> Self {
         Self {
-            base_path: String::new(),
+            path_picker: PathPicker::new("Mods Path:", "Select Mods Directory"),
+            status: StatusDisplay::default(),
         }
     }
 }
 
 impl GenSrfPanel {
+    fn validate(&self) -> Result<(), String> {
+        let path = self.path_picker.path();
+        if !path.exists() {
+            return Err("Mods path does not exist".into());
+        }
+        if !path.is_dir() {
+            return Err("Mods path must be a directory".into());
+        }
+        Ok(())
+    }
+
     fn start_gen_srf(&self, sender: Sender<CommandMessage>) {
-        let base_path = PathBuf::from(&self.base_path);
+        let base_path = self.path_picker.path();
 
         thread::spawn(move || {
             match commands::gen_srf::gen_srf(&base_path) {
@@ -33,6 +46,8 @@ impl GenSrfPanel {
         ui.heading("Generate SRF");
         ui.add_space(8.0);
         
+        self.status.show(ui);
+        
         match state {
             GuiState::GeneratingSRF { progress, current_mod, mods_processed, total_mods } => {
                 ui.label(format!("Processing: {} / {} mods", mods_processed, total_mods));
@@ -42,16 +57,13 @@ impl GenSrfPanel {
                     .animate(true));
             },
             GuiState::Idle => {
-                ui.horizontal(|ui| {
-                    ui.label("Mods Path:");
-                    ui.text_edit_singleline(&mut self.base_path);
-                    if ui.button("Browse").clicked() {
-                        // TODO: Implement file dialog
-                    }
-                });
+                self.path_picker.show(ui);
                 
                 if ui.button("Generate SRF").clicked() {
-                    if let Some(sender) = sender {
+                    self.status.clear();
+                    if let Err(e) = self.validate() {
+                        self.status.set_error(e);
+                    } else if let Some(sender) = sender {
                         self.start_gen_srf(sender.clone());
                     }
                 }

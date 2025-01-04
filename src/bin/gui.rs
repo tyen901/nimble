@@ -44,7 +44,7 @@ impl eframe::App for NimbleGui {
         egui::CentralPanel::default().show(ctx, |ui| {
             match self.selected_tab {
                 Tab::Sync => self.sync_panel.show(ui, &self.state, Some(&self.channels.sender)),
-                Tab::Launch => self.launch_panel.show(ui),
+                Tab::Launch => self.launch_panel.show(ui, &self.state, Some(&self.channels.sender)),
                 Tab::GenSrf => self.gen_srf_panel.show(ui, &self.state, Some(&self.channels.sender)),
             }
             
