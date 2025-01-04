@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use eframe::egui;
+use egui::ViewportBuilder;
 use nimble::gui::panels::{sync_panel::SyncPanel, launch_panel::LaunchPanel, gen_srf_panel::GenSrfPanel};
 use nimble::gui::state::{GuiState, GuiConfig, CommandMessage, CommandChannels};
 
@@ -119,14 +120,16 @@ impl eframe::App for NimbleGui {
 }
 
 fn main() -> Result<(), eframe::Error> {
+    let config = GuiConfig::load();
     let options = eframe::NativeOptions {
-        initial_window_size: Some(egui::vec2(800.0, 600.0)),
+        viewport: ViewportBuilder::default()
+            .with_inner_size(config.window_size()),
         ..Default::default()
     };
     
     eframe::run_native(
         "Nimble",
         options,
-        Box::new(|cc| Box::new(NimbleGui::new(cc)))
+        Box::new(|cc| Ok(Box::new(NimbleGui::new(cc))))
     )
 }

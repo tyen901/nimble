@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
+use eframe::egui;
 
 #[derive(Debug)]
 pub enum CommandMessage {
@@ -61,7 +62,12 @@ impl Default for GuiState {
 pub struct GuiConfig {
     pub repo_url: String,
     pub base_path: PathBuf,
-    pub window_size: (f32, f32),
+    #[serde(default = "default_window_size")]
+    window_size: (f32, f32),
+}
+
+fn default_window_size() -> (f32, f32) {
+    (800.0, 600.0)
 }
 
 impl Default for GuiConfig {
@@ -69,7 +75,7 @@ impl Default for GuiConfig {
         Self {
             repo_url: String::new(),
             base_path: PathBuf::new(),
-            window_size: (800.0, 600.0),
+            window_size: default_window_size(),
         }
     }
 }
@@ -99,5 +105,13 @@ impl GuiConfig {
             return Err("Repository URL is required".into());
         }
         Ok(())
+    }
+
+    pub fn window_size(&self) -> egui::Vec2 {
+        egui::Vec2::new(self.window_size.0, self.window_size.1)
+    }
+
+    pub fn set_window_size(&mut self, size: egui::Vec2) {
+        self.window_size = (size.x, size.y);
     }
 }
