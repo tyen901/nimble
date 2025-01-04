@@ -2,6 +2,7 @@ use crate::md5_digest::Md5Digest;
 use serde::{Deserialize, Deserializer, Serialize};
 use snafu::prelude::*;
 use std::{fmt::Display, net::IpAddr, str::FromStr};
+use ureq::Agent;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -77,7 +78,22 @@ pub struct Repository {
 
 impl Repository {
     pub fn new(url: &str, agent: &mut ureq::Agent) -> Result<Self, Error> {
-        get_repository_info(agent, url)
+        let repo_json_url = format!("{}/repo.json", url.trim_end_matches('/'));
+        get_repository_info(agent, &repo_json_url)
+    }
+
+    pub fn validate_connection(agent: &mut Agent, repo_url: &str) -> Result<(), String> {
+        let repo_json_url = format!("{}/repo.json", repo_url.trim_end_matches('/'));
+        
+        match agent.get(&repo_json_url).call() {
+            Ok(response) => {
+                if response.status() != 200 {
+                    return Err(format!("Repository returned status: {}", response.status()));
+                }
+                Ok(())
+            },
+            Err(e) => Err(format!("Failed to connect to repository: {}", e)),
+        }
     }
 }
 
@@ -85,7 +101,7 @@ pub fn get_repository_info(agent: &mut ureq::Agent, url: &str) -> Result<Reposit
     agent
         .get(url)
         .call()
-        .context(HttpSnafu { url })?
+        .context(HttpSnafu { url: url.to_string() })?
         .into_json()
         .context(DeserializationSnafu)
 }

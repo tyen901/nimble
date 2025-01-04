@@ -1,44 +1,37 @@
 use eframe::egui;
 
 pub struct StatusDisplay {
-    error: Option<String>,
-    status: Option<String>,
+    message: Option<String>,
+    is_error: bool,
 }
 
 impl Default for StatusDisplay {
     fn default() -> Self {
         Self {
-            error: None,
-            status: None,
+            message: None,
+            is_error: false,
         }
     }
 }
 
 impl StatusDisplay {
-    pub fn set_error(&mut self, error: impl Into<String>) {
-        self.error = Some(error.into());
-        self.status = None;
-    }
-
-    pub fn set_status(&mut self, status: impl Into<String>) {
-        self.status = Some(status.into());
-        self.error = None;
+    pub fn set_message(&mut self, message: impl Into<String>, is_error: bool) {
+        self.message = Some(message.into());
+        self.is_error = is_error;
     }
 
     pub fn clear(&mut self) {
-        self.error = None;
-        self.status = None;
+        self.message = None;
     }
 
     pub fn show(&self, ui: &mut egui::Ui) {
-        if let Some(error) = &self.error {
-            ui.colored_label(ui.style().visuals.error_fg_color, error);
-            ui.add_space(8.0);
-        }
-        
-        if let Some(status) = &self.status {
-            ui.label(status);
-            ui.add_space(8.0);
+        if let Some(message) = &self.message {
+            let color = if self.is_error {
+                ui.style().visuals.error_fg_color
+            } else {
+                ui.style().visuals.text_color()
+            };
+            ui.colored_label(color, message);
         }
     }
 }

@@ -2,10 +2,14 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use eframe::egui;
+use crate::repository::Repository;
 
 #[derive(Debug)]
 pub enum CommandMessage {
     ConfigChanged,
+    ConnectionStarted,
+    ConnectionComplete(Repository),
+    ConnectionError(String),
     SyncProgress { file: String, progress: f32, processed: usize, total: usize },
     SyncComplete,
     SyncError(String),
@@ -35,9 +39,11 @@ impl Default for CommandChannels {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum GuiState {
+    #[default]
     Idle,
+    Connecting,
     Syncing { 
         progress: f32,
         current_file: String,
@@ -51,12 +57,6 @@ pub enum GuiState {
         mods_processed: usize,
         total_mods: usize,
     },
-}
-
-impl Default for GuiState {
-    fn default() -> Self {
-        Self::Idle
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

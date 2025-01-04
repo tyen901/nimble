@@ -62,7 +62,7 @@ impl GenSrfPanel {
                 if ui.button("Generate SRF").clicked() {
                     self.status.clear();
                     if let Err(e) = self.validate() {
-                        self.status.set_error(e);
+                        self.status.set_message(e, true);
                     } else if let Some(sender) = sender {
                         self.start_gen_srf(sender.clone());
                     }

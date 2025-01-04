@@ -1,5 +1,6 @@
 use eframe::egui;
 use std::path::PathBuf;
+use rfd::FileDialog;
 
 pub struct PathPicker {
     pub path: String,
@@ -35,5 +36,9 @@ impl PathPicker {
 
     pub fn path(&self) -> PathBuf {
         PathBuf::from(&self.path)
+    }
+
+    pub fn set_path(&mut self, path: &PathBuf) {
+        self.path = path.display().to_string();
     }
 }
