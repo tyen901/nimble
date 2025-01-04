@@ -9,6 +9,7 @@ pub mod mod_cache;
 pub mod pbo;
 pub mod repository;
 pub mod srf;
+pub mod gui;
 
 #[derive(Debug)]
 pub enum NimbleError {
