@@ -24,11 +24,29 @@ impl Default for SyncPanel {
 
 impl SyncPanel {
     pub fn from_config(config: &GuiConfig) -> Self {
+        let mut path_picker = PathPicker::new("Base Path:", "Select Mods Directory");
+        if config.base_path.exists() {
+            path_picker.path = config.base_path.display().to_string();
+        }
+        
         Self {
             repo_url: config.repo_url.clone(),
-            path_picker: PathPicker::new("Base Path:", "Select Mods Directory"),
+            path_picker,
             error: None,
         }
+    }
+
+    pub fn repo_url(&self) -> &str {
+        &self.repo_url
+    }
+
+    pub fn base_path(&self) -> PathBuf {
+        self.path_picker.path()
+    }
+
+    pub fn update_config(&self, config: &mut GuiConfig) {
+        config.repo_url = self.repo_url.clone();
+        config.base_path = self.path_picker.path();
     }
 
     fn validate(&self) -> Result<(), String> {
@@ -89,10 +107,18 @@ impl SyncPanel {
             GuiState::Idle => {
                 ui.horizontal(|ui| {
                     ui.label("Repository URL:");
-                    ui.text_edit_singleline(&mut self.repo_url);
+                    if ui.text_edit_singleline(&mut self.repo_url).changed() {
+                        if let Some(sender) = sender {
+                            sender.send(CommandMessage::ConfigChanged).ok();
+                        }
+                    }
                 });
                 
-                self.path_picker.show(ui);
+                if self.path_picker.show(ui).is_some() {
+                    if let Some(sender) = sender {
+                        sender.send(CommandMessage::ConfigChanged).ok();
+                    }
+                }
                 
                 ui.horizontal(|ui| {
                     if ui.button("Start Sync").clicked() {

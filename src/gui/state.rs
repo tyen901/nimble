@@ -5,6 +5,7 @@ use eframe::egui;
 
 #[derive(Debug)]
 pub enum CommandMessage {
+    ConfigChanged,
     SyncProgress { file: String, progress: f32, processed: usize, total: usize },
     SyncComplete,
     SyncError(String),
@@ -60,10 +61,16 @@ impl Default for GuiState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuiConfig {
+    #[serde(default = "default_version")]
+    version: u32,
     pub repo_url: String,
     pub base_path: PathBuf,
     #[serde(default = "default_window_size")]
     window_size: (f32, f32),
+}
+
+fn default_version() -> u32 {
+    1
 }
 
 fn default_window_size() -> (f32, f32) {
@@ -73,6 +80,7 @@ fn default_window_size() -> (f32, f32) {
 impl Default for GuiConfig {
     fn default() -> Self {
         Self {
+            version: default_version(),
             repo_url: String::new(),
             base_path: PathBuf::new(),
             window_size: default_window_size(),
@@ -81,19 +89,26 @@ impl Default for GuiConfig {
 }
 
 impl GuiConfig {
+    pub const CURRENT_VERSION: u32 = 1;
+
+    // Add version accessor methods
+    pub fn version(&self) -> u32 {
+        self.version
+    }
+
+    pub fn set_version(&mut self, version: u32) {
+        self.version = version;
+    }
+
     pub fn load() -> Self {
-        if let Ok(config_str) = std::fs::read_to_string("nimble_config.json") {
-            serde_json::from_str(&config_str).unwrap_or_default()
-        } else {
-            Self::default()
-        }
+        super::config::load_config().unwrap_or_default()
     }
 
-    pub fn save(&self) -> Result<(), std::io::Error> {
-        let config_str = serde_json::to_string_pretty(self)?;
-        std::fs::write("nimble_config.json", config_str)
+    pub fn save(&self) -> Result<(), String> {
+        super::config::save_config(self)
     }
 
+    // Modify validate to only check non-version requirements
     pub fn validate(&self) -> Result<(), String> {
         if !self.base_path.exists() {
             return Err("Base path does not exist".into());

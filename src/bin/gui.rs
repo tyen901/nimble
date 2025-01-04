@@ -25,13 +25,40 @@ enum Tab {
 }
 
 impl NimbleGui {
-    fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        Self::default()
+    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // Load config first
+        let config = GuiConfig::load();
+        
+        // Initialize panels with config
+        let sync_panel = SyncPanel::from_config(&config);
+        
+        Self {
+            config,
+            sync_panel,
+            state: GuiState::default(),
+            launch_panel: LaunchPanel::default(),
+            gen_srf_panel: GenSrfPanel::default(),
+            channels: CommandChannels::default(),
+            selected_tab: Tab::default(),
+        }
     }
 }
 
 impl eframe::App for NimbleGui {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn save(&mut self, _storage: &mut dyn eframe::Storage) {
+        // Update config from panels before saving
+        self.config.repo_url = self.sync_panel.repo_url().to_string();
+        self.config.base_path = self.sync_panel.base_path();
+        
+        if let Err(e) = self.config.save() {
+            eprintln!("Failed to save config: {}", e);
+        }
+    }
+
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // Update window size in config
+        // TODO: Implement window size change handling
+
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Nimble");
@@ -52,6 +79,12 @@ impl eframe::App for NimbleGui {
             // Update state based on command messages
             while let Ok(msg) = self.channels.receiver.try_recv() {
                 match msg {
+                    CommandMessage::ConfigChanged => {
+                        self.sync_panel.update_config(&mut self.config);
+                        if let Err(e) = self.config.save() {
+                            eprintln!("Failed to save config: {}", e);
+                        }
+                    }
                     CommandMessage::SyncProgress { file, progress, processed, total } => {
                         self.state = GuiState::Syncing { 
                             progress,

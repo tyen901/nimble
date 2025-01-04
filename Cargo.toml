@@ -25,6 +25,7 @@ open = "3"
 percent-encoding = "2"
 eframe = "0.30.0"
 rfd = "0.15.2"
+dirs = "5.0"
 
 # The profile that 'dist' will build with
 [profile.dist]
