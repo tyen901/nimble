@@ -31,6 +31,34 @@
             },
             "args": [],
             "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Release GUI",
+            "cargo": {
+                "args": ["build", "--release", "--bin=nimble-gui", "--package=nimble"],
+                "filter": {
+                    "name": "nimble-gui",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Release CLI",
+            "cargo": {
+                "args": ["build", "--release", "--bin=nimble", "--package=nimble"],
+                "filter": {
+                    "name": "nimble",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
         }
     ]
 }
