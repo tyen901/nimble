@@ -13,6 +13,8 @@ pub enum CommandMessage {
     SyncProgress { file: String, progress: f32, processed: usize, total: usize },
     SyncComplete,
     SyncError(String),
+    SyncCancelled,
+    CancelSync,
     GenSrfProgress { current_mod: String, progress: f32, processed: usize, total: usize },
     GenSrfComplete,
     GenSrfError(String),

@@ -104,6 +104,12 @@ impl eframe::App for NimbleGui {
                         println!("Sync error: {}", error);
                         self.state = GuiState::Idle;
                     }
+                    CommandMessage::SyncCancelled => {
+                        self.state = GuiState::Idle;
+                    },
+                    CommandMessage::CancelSync => {
+                        // State will be updated when SyncCancelled is received
+                    },
                     CommandMessage::LaunchStarted => {
                         self.state = GuiState::Launching;
                     }

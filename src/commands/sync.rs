@@ -8,6 +8,8 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 use tempfile::tempfile;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 #[derive(Debug)]
 struct DownloadCommand {
@@ -41,6 +43,21 @@ pub enum Error {
     SrfGeneration { source: srf::Error },
     #[snafu(display("Failed to open ModCache: {}", source))]
     ModCacheOpen { source: crate::mod_cache::Error },
+    #[snafu(display("Sync was cancelled"))]
+    Cancelled,
+}
+
+pub struct SyncContext {
+    pub cancel: Arc<AtomicBool>,
+    // Add other context fields as needed
+}
+
+impl Default for SyncContext {
+    fn default() -> Self {
+        Self {
+            cancel: Arc::new(AtomicBool::new(false))
+        }
+    }
 }
 
 fn diff_repo<'a>(
@@ -191,8 +208,13 @@ fn execute_command_list(
     remote_base: &str,
     local_base: &Path,
     commands: &[DownloadCommand],
+    context: &SyncContext,
 ) -> Result<(), Error> {
     for (i, command) in commands.iter().enumerate() {
+        if context.cancel.load(Ordering::Relaxed) {
+            return Err(Error::Cancelled);
+        }
+
         println!("downloading {} of {} - {}", i, commands.len(), command.file);
 
         // download into temp file first in case we have a failure. this avoids us writing garbage data
@@ -240,6 +262,17 @@ pub fn sync(
     base_path: &Path,
     dry_run: bool,
 ) -> Result<(), Error> {
+    let context = SyncContext::default();
+    sync_with_context(agent, repo_url, base_path, dry_run, &context)
+}
+
+pub fn sync_with_context(
+    agent: &mut ureq::Agent,
+    repo_url: &str,
+    base_path: &Path,
+    dry_run: bool,
+    context: &SyncContext,
+) -> Result<(), Error> {
     let remote_repo = repository::get_repository_info(agent, &format!("{repo_url}/repo.json"))
         .context(RepositoryFetchSnafu)?;
 
@@ -266,7 +299,7 @@ pub fn sync(
         return Ok(());
     }
 
-    let res = execute_command_list(agent, repo_url, base_path, &download_commands);
+    let res = execute_command_list(agent, repo_url, base_path, &download_commands, context);
 
     if let Err(e) = res {
         println!("an error occured while downloading: {e}");

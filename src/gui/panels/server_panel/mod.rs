@@ -49,7 +49,7 @@ impl ServerPanel {
                 if self.repository_view.repository().is_none() {
                     self.connection_view.show(ui, sender);
                 } else {
-                    self.repository_view.show(ui, sender);
+                    self.repository_view.show(ui, sender, state);
                 }
             },
             GuiState::Connecting => {
@@ -60,6 +60,7 @@ impl ServerPanel {
                 ui.label(format!("Syncing: {} / {} files", files_processed, total_files));
                 ui.label(format!("Current file: {}", current_file));
                 ui.add(egui::ProgressBar::new(*progress).show_percentage().animate(true));
+                self.repository_view.show(ui, sender, state);
             },
             GuiState::Launching => {
                 ui.spinner();
