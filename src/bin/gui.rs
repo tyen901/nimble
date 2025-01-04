@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use eframe::egui;
-use nimble::gui::panels::{sync_panel::SyncPanel, launch_panel::LaunchPanel};
-use nimble::gui::state::{GuiState, GuiConfig};
+use nimble::gui::panels::{sync_panel::SyncPanel, launch_panel::LaunchPanel, gen_srf_panel::GenSrfPanel};
+use nimble::gui::state::{GuiState, GuiConfig, CommandMessage, CommandChannels};
 
 #[derive(Default)]
 struct NimbleGui {
@@ -10,6 +10,8 @@ struct NimbleGui {
     state: GuiState,
     sync_panel: SyncPanel,
     launch_panel: LaunchPanel,
+    gen_srf_panel: GenSrfPanel,
+    channels: CommandChannels,
     selected_tab: Tab,
 }
 
@@ -41,12 +43,55 @@ impl eframe::App for NimbleGui {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             match self.selected_tab {
-                Tab::Sync => self.sync_panel.show(ui),
+                Tab::Sync => self.sync_panel.show(ui, &self.state, Some(&self.channels.sender)),
                 Tab::Launch => self.launch_panel.show(ui),
-                Tab::GenSrf => {
-                    ui.heading("Generate SRF");
-                    // TODO: Implement SRF panel
-                },
+                Tab::GenSrf => self.gen_srf_panel.show(ui, &self.state, Some(&self.channels.sender)),
+            }
+            
+            // Update state based on command messages
+            while let Ok(msg) = self.channels.receiver.try_recv() {
+                match msg {
+                    CommandMessage::SyncProgress { file, progress, processed, total } => {
+                        self.state = GuiState::Syncing { 
+                            progress,
+                            current_file: file,
+                            files_processed: processed,
+                            total_files: total,
+                        };
+                    }
+                    CommandMessage::SyncComplete => {
+                        self.state = GuiState::Idle;
+                    }
+                    CommandMessage::SyncError(error) => {
+                        println!("Sync error: {}", error);
+                        self.state = GuiState::Idle;
+                    }
+                    CommandMessage::GenSrfProgress { current_mod, progress, processed, total } => {
+                        self.state = GuiState::GeneratingSRF {
+                            progress,
+                            current_mod,
+                            mods_processed: processed,
+                            total_mods: total,
+                        };
+                    }
+                    CommandMessage::GenSrfComplete => {
+                        self.state = GuiState::Idle;
+                    }
+                    CommandMessage::GenSrfError(error) => {
+                        println!("GenSRF error: {}", error);
+                        self.state = GuiState::Idle;
+                    }
+                    CommandMessage::LaunchStarted => {
+                        self.state = GuiState::Launching;
+                    }
+                    CommandMessage::LaunchComplete => {
+                        self.state = GuiState::Idle;
+                    }
+                    CommandMessage::LaunchError(error) => {
+                        println!("Launch error: {}", error);
+                        self.state = GuiState::Idle;
+                    }
+                }
             }
         });
 
@@ -56,14 +101,14 @@ impl eframe::App for NimbleGui {
                     GuiState::Idle => {
                         ui.label("Ready");
                     },
-                    GuiState::Syncing { progress } => {
+                    GuiState::Syncing { progress, .. } => {
                         ui.label("Syncing...");
                         ui.add(egui::ProgressBar::new(progress));
                     },
                     GuiState::Launching => {
                         ui.label("Launching game...");
                     },
-                    GuiState::GeneratingSRF { progress } => {
+                    GuiState::GeneratingSRF { progress, .. } => {
                         ui.label("Generating SRF...");
                         ui.add(egui::ProgressBar::new(progress));
                     },
