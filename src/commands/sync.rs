@@ -330,7 +330,7 @@ pub fn sync_with_context(
             println!("Generating SRF files for downloaded mods...");
             for r#mod in &check {
                 println!("  - Generating SRF for {}", r#mod.mod_name);
-                let srf = gen_srf_for_mod(&base_path.join(Path::new(&r#mod.mod_name)));
+                let srf = gen_srf_for_mod(&base_path.join(Path::new(&r#mod.mod_name)), None);
                 mod_cache.insert(srf);
             }
 

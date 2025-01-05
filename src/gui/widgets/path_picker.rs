@@ -27,23 +27,33 @@ impl PathPicker {
     // Return true if the path was changed
     pub fn show(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
-        ui.horizontal(|ui| {
+        ui.vertical(|ui| {
             ui.label(&self.label);
-            let path_string = self.path.to_string_lossy().to_string();
-            let mut text = path_string.clone();
-            if ui.text_edit_singleline(&mut text).changed() {
-                self.path = PathBuf::from(text);
-                changed = true;
-            }
-            if ui.button("Browse").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_title(&self.dialog_title)
-                    .pick_folder() 
-                {
-                    self.path = path;
-                    changed = true;
+            
+            ui.horizontal(|ui| {
+                // Set a minimum width for consistent layout
+                let min_width = 300.0;
+                let path_string = self.path.to_string_lossy().to_string();
+                let mut text = path_string.clone();
+                
+                ui.scope(|ui| {
+                    ui.set_min_width(min_width);
+                    if ui.text_edit_singleline(&mut text).changed() {
+                        self.path = PathBuf::from(text);
+                        changed = true;
+                    }
+                });
+                
+                if ui.button("📂 Browse").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_title(&self.dialog_title)
+                        .pick_folder() 
+                    {
+                        self.path = path;
+                        changed = true;
+                    }
                 }
-            }
+            });
         });
         changed
     }

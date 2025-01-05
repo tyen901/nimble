@@ -65,6 +65,9 @@ pub enum Commands {
     GenSrf {
         #[clap(short, long)]
         path: PathBuf,
+
+        #[clap(short, long)]
+        output: Option<PathBuf>,
     },
     Launch {
         #[clap(short, long)]
@@ -91,8 +94,8 @@ pub fn run(args: Args) -> Result<(), NimbleError> {
         } => {
             commands::sync::sync(&mut agent, &repo_url, &path, dry_run)?;
         }
-        Commands::GenSrf { path } => {
-            commands::gen_srf::gen_srf(&path)?;
+        Commands::GenSrf { path, output } => {
+            commands::gen_srf::gen_srf(&path, output.as_deref())?;
         }
         Commands::Launch { path } => {
             commands::launch::launch(&path)?;

@@ -8,10 +8,20 @@ use std::io::BufWriter;
 use std::path::Path;
 use walkdir::WalkDir;
 
-pub fn gen_srf_for_mod(mod_path: &Path) -> srf::Mod {
+pub fn gen_srf_for_mod(mod_path: &Path, output_dir: Option<&Path>) -> srf::Mod {
     let generated_srf = srf::scan_mod(mod_path).unwrap();
 
-    let path = mod_path.join("mod.srf");
+    let path = match output_dir {
+        Some(out_dir) => {
+            let mod_name = mod_path.file_name().unwrap();
+            out_dir.join(mod_name).join("mod.srf")
+        }
+        None => mod_path.join("mod.srf"),
+    };
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
 
     let writer = BufWriter::new(File::create(path).unwrap());
     serde_json::to_writer(writer, &generated_srf).unwrap();
@@ -26,14 +36,14 @@ pub fn open_cache_or_gen_srf(base_path: &Path) -> Result<ModCache, mod_cache::Er
             if source.kind() == std::io::ErrorKind::NotFound =>
         {
             println!("nimble-cache.json not found, generating...");
-            gen_srf(base_path)?;
+            gen_srf(base_path, None)?;
             ModCache::from_disk_or_empty(base_path)
         }
         Err(e) => Err(e),
     }
 }
 
-pub fn gen_srf(base_path: &Path) -> Result<(), mod_cache::Error> {
+pub fn gen_srf(base_path: &Path, output_dir: Option<&Path>) -> Result<(), mod_cache::Error> {
     let mods: HashMap<Md5Digest, srf::Mod> = WalkDir::new(base_path)
         .min_depth(1)
         .max_depth(1)
@@ -43,12 +53,12 @@ pub fn gen_srf(base_path: &Path) -> Result<(), mod_cache::Error> {
         .filter(|e| e.file_type().is_dir() && e.file_name().to_string_lossy().starts_with('@'))
         .map(|entry| {
             let path = entry.path();
-            let srf = gen_srf_for_mod(path);
+            let srf = gen_srf_for_mod(path, output_dir);
 
             (srf.checksum.clone(), srf)
         })
         .collect();
 
     let cache = ModCache::new(mods)?;
-    cache.to_disk(base_path)
+    cache.to_disk(output_dir.unwrap_or(base_path))
 }
