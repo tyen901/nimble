@@ -227,29 +227,20 @@ fn execute_command_list(
 
         println!("downloading {} of {} - {}", i, commands.len(), command.file);
 
-        // Report progress to GUI
+        // Report file progress to GUI
         if let Some(sender) = &context.status_sender {
             sender.send(CommandMessage::SyncProgress {
                 file: command.file.clone(),
-                progress: i as f32 / commands.len() as f32,
+                progress: 0.0, // Start at 0 for new file
                 processed: i,
                 total: commands.len(),
             }).ok();
         }
 
-        // download into temp file first
+        // Download into temp file first
         let mut temp_download_file = tempfile().context(IoSnafu)?;
         let remote_url = format!("{}{}", remote_base, command.file);
-
-        // Set up the request but don't execute it yet
-        let request = agent.get(&remote_url);
-
-        // Check cancel before starting download
-        if context.cancel.load(Ordering::SeqCst) {
-            return Err(Error::Cancelled);
-        }
-
-        let response = request.call().context(HttpSnafu {
+        let response = agent.get(&remote_url).call().context(HttpSnafu {
             url: remote_url.clone(),
         })?;
 
@@ -266,8 +257,7 @@ fn execute_command_list(
 
         let mut reader = response.into_reader();
         let mut downloaded = 0;
-        let chunk_size = 8192; // Smaller chunks for more frequent cancel checks
-        let mut buffer = vec![0; chunk_size];
+        let mut buffer = vec![0; 8192];
 
         loop {
             if context.cancel.load(Ordering::SeqCst) {
@@ -278,16 +268,11 @@ fn execute_command_list(
             match reader.read(&mut buffer) {
                 Ok(0) => break, // EOF
                 Ok(n) => {
-                    if context.cancel.load(Ordering::SeqCst) {
-                        pb.finish_and_clear();
-                        return Err(Error::Cancelled);
-                    }
-
                     temp_download_file.write_all(&buffer[..n]).context(IoSnafu)?;
                     downloaded += n;
                     pb.set_position(downloaded as u64);
 
-                    // Update progress more frequently
+                    // Update progress
                     if let Some(sender) = &context.status_sender {
                         sender.send(CommandMessage::SyncProgress {
                             file: command.file.clone(),
@@ -306,20 +291,13 @@ fn execute_command_list(
 
         pb.finish_and_clear();
 
-        // Final cancel check before writing to disk
-        if context.cancel.load(Ordering::SeqCst) {
-            return Err(Error::Cancelled);
-        }
-
-        // copy from temp to permanent file
+        // Write to permanent file
         let file_path = local_base.join(Path::new(&command.file));
         std::fs::create_dir_all(file_path.parent().expect("file_path did not have a parent"))
             .context(IoSnafu)?;
         let mut local_file = File::create(&file_path).context(IoSnafu)?;
 
-        temp_download_file
-            .seek(SeekFrom::Start(0))
-            .context(IoSnafu)?;
+        temp_download_file.seek(SeekFrom::Start(0)).context(IoSnafu)?;
         std::io::copy(&mut temp_download_file, &mut local_file).context(IoSnafu)?;
     }
 
