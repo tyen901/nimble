@@ -191,13 +191,20 @@ fn remove_leftover_files<'a>(
     files: impl Iterator<Item = &'a srf::File>,
 ) -> Result<(), std::io::Error> {
     for file in files {
+
         let path = file
             .path
             .to_path(local_base_path.join(Path::new(&r#mod.name)));
 
         println!("removing leftover file {}", &path.display());
 
-        std::fs::remove_file(&path)?;
+        // Only attempt to remove if file exists
+        if path.exists() {
+            if let Err(e) = std::fs::remove_file(&path) {
+                eprintln!("Warning: Failed to remove file {}: {}", path.display(), e);
+                // Continue with other files even if one fails
+            }
+        }
     }
 
     Ok(())
@@ -290,7 +297,13 @@ pub fn sync_with_context(
     let mut download_commands = vec![];
 
     for r#mod in &check {
-        download_commands.extend(diff_mod(agent, repo_url, base_path, r#mod).unwrap());
+        match diff_mod(agent, repo_url, base_path, r#mod) {
+            Ok(commands) => download_commands.extend(commands),
+            Err(e) => {
+                eprintln!("Error diffing mod {}: {}", r#mod.mod_name, e);
+                continue; // Skip this mod but continue with others
+            }
+        }
     }
 
     println!("download commands: {download_commands:#?}");
