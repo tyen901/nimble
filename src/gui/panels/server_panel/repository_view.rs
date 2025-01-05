@@ -43,9 +43,15 @@ impl RepositoryView {
 
         if let Some((repo_name, version, required_mods_count, optional_mods_count)) = repo_data {
             ui.vertical(|ui| {
-                // Repository header section
-                ui.heading(&repo_name);
-                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    // Repository header section with disconnect button
+                    ui.heading(&repo_name);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Disconnect").clicked() && sender.is_some() {
+                            sender.unwrap().send(CommandMessage::Disconnect).ok();
+                        }
+                    });
+                });
                 
                 // Repository info section
                 ui.group(|ui| {
@@ -74,25 +80,15 @@ impl RepositoryView {
                 ui.add_space(4.0);
             });
 
-            // Handle state outside vertical layout to avoid borrow issues
-            match state {
-                GuiState::Syncing { .. } => {
-                    if let Some(sender) = sender {
-                        if ui.button("Stop Sync").clicked() {
-                            self.sync_cancel.store(true, Ordering::Relaxed);
-                            sender.send(CommandMessage::CancelSync).ok();
-                        }
-                    }
-                },
-                _ => {
-                    self.status.show(ui);
+            // Only show action buttons if not in syncing state
+            if !matches!(state, GuiState::Syncing { .. }) {
+                self.status.show(ui);
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    self.show_sync_button(ui, sender);
                     ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        self.show_sync_button(ui, sender);
-                        ui.add_space(8.0);
-                        self.show_launch_button(ui, sender);
-                    });
-                }
+                    self.show_launch_button(ui, sender);
+                });
             }
         }
     }
@@ -145,6 +141,10 @@ impl RepositoryView {
 
     pub fn repository(&self) -> Option<&Repository> {
         self.repository.as_ref()
+    }
+
+    pub fn set_url(&mut self, url: String) {
+        self.repo_url = url;
     }
 
     fn start_sync_with_context(base_path: PathBuf, repo_url: &str, sync_cancel: Arc<AtomicBool>, sender: Sender<CommandMessage>) {

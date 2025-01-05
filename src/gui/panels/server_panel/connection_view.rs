@@ -20,25 +20,44 @@ impl Default for ConnectionView {
 }
 
 impl ConnectionView {
-    pub fn show(&mut self, ui: &mut egui::Ui, sender: Option<&Sender<CommandMessage>>, _state: &GuiState) {
+    pub fn show(&mut self, ui: &mut egui::Ui, sender: Option<&Sender<CommandMessage>>, state: &GuiState) {
         self.status.show(ui);
+
+        if matches!(state, GuiState::Connecting) {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Connecting to server...");
+            });
+            return;
+        }
 
         ui.horizontal(|ui| {
             ui.label("Repository URL:");
             ui.text_edit_singleline(&mut self.repo_url);
         });
 
-        if ui.button("Connect").clicked() {
-            // Clone values before using in closures
+        if ui.button("Connect").clicked() && sender.is_some() {
             let repo_url = self.repo_url.clone();
-            let status = &mut self.status;
+            let sender = sender.unwrap().clone();
             
-            <Self as CommandHandler>::handle_validation(
-                || Self::validate(&repo_url),
-                |e| status.set_error(e),
-                |s| Self::connect_to_server(&repo_url, s.unwrap().clone()),
-                sender
-            );
+            // Signal connection started before spawning thread
+            sender.send(CommandMessage::ConnectionStarted).ok();
+            
+            std::thread::spawn(move || {
+                let mut agent = ureq::agent();
+                
+                // First validate the connection
+                if let Err(e) = crate::repository::Repository::validate_connection(&mut agent, &repo_url) {
+                    sender.send(CommandMessage::ConnectionError(e)).ok();
+                    return;
+                }
+
+                // Then attempt to load the repository
+                match crate::repository::Repository::new(&repo_url, &mut agent) {
+                    Ok(repo) => sender.send(CommandMessage::ConnectionComplete(repo)),
+                    Err(e) => sender.send(CommandMessage::ConnectionError(e.to_string())),
+                }.ok();
+            });
         }
     }
 

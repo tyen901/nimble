@@ -135,6 +135,10 @@ impl eframe::App for NimbleGui {
                         println!("GenSRF error: {}", error);
                         self.state = GuiState::Idle;
                     }
+                    CommandMessage::Disconnect => {
+                        self.server_panel.handle_command(&msg);
+                        self.state = GuiState::Idle;
+                    }
                 }
             }
         });

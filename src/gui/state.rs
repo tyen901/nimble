@@ -21,6 +21,7 @@ pub enum CommandMessage {
     LaunchStarted,
     LaunchComplete,
     LaunchError(String),
+    Disconnect,
 }
 
 pub struct CommandChannels {

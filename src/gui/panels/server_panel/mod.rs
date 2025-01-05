@@ -25,7 +25,11 @@ impl Default for ServerPanel {
 impl ServerPanel {
     pub fn from_config(config: &GuiConfig) -> Self {
         let mut panel = Self::default();
+        
+        // Store URL in both views to maintain state
         panel.connection_view.repo_url = config.repo_url.clone();
+        panel.repository_view.set_url(config.repo_url.clone());
+        
         if config.base_path.exists() {
             panel.repository_view.path_picker.set_path(&config.base_path);
         }
@@ -57,10 +61,23 @@ impl ServerPanel {
                 ui.label("Connecting to server...");
             },
             GuiState::Syncing { progress, current_file, files_processed, total_files } => {
-                ui.label(format!("Syncing: {} / {} files", files_processed, total_files));
-                ui.label(format!("Current file: {}", current_file));
-                ui.add(egui::ProgressBar::new(*progress).show_percentage().animate(true));
-                self.repository_view.show(ui, sender, state);
+                // Show repository info but disable interaction
+                ui.group(|ui| {
+                    ui.add_enabled_ui(false, |ui| {
+                        self.repository_view.show(ui, sender, state);
+                    });
+                });
+                
+                // Show sync progress
+                ui.group(|ui| {
+                    ui.label(format!("Syncing: {} / {} files", files_processed, total_files));
+                    ui.label(format!("Current file: {}", current_file));
+                    ui.add(egui::ProgressBar::new(*progress).show_percentage().animate(true));
+                    
+                    if ui.button("Cancel Sync").clicked() && sender.is_some() {
+                        sender.unwrap().send(CommandMessage::CancelSync).ok();
+                    }
+                });
             },
             GuiState::Launching => {
                 ui.spinner();
@@ -71,6 +88,16 @@ impl ServerPanel {
     }
 
     pub fn set_repository(&mut self, repo: Repository) {
+        // Pass both repository and URL when setting up repository view
         self.repository_view.set_repository(repo, self.connection_view.repo_url.clone());
+    }
+
+    pub fn handle_command(&mut self, command: &CommandMessage) {
+        match command {
+            CommandMessage::Disconnect => {
+                self.repository_view = RepositoryView::default();
+            }
+            _ => {}
+        }
     }
 }
