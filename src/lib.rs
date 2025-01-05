@@ -55,6 +55,12 @@ impl From<commands::launch::Error> for NimbleError {
     }
 }
 
+impl From<commands::diff::Error> for NimbleError {
+    fn from(error: commands::diff::Error) -> Self {
+        NimbleError::Other(error.to_string())
+    }
+}
+
 #[derive(Subcommand)]
 pub enum Commands {
     Sync {
