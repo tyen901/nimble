@@ -67,12 +67,19 @@ impl RepositoryView {
             let repo_url = self.repo_url.clone();
             let sync_cancel = self.sync_cancel.clone();
             
+            // Validate repository exists
+            if self.repository.is_none() {
+                self.status.set_error("No repository connected");
+                return;
+            }
+            
             if base_path.to_str().unwrap_or("").trim().is_empty() {
                 self.status.set_error("Base path is required");
                 return;
             }
             
             if let Some(sender) = sender {
+                self.sync_cancel.store(false, Ordering::Relaxed); // Reset cancel flag
                 Self::start_sync_with_context(base_path, &repo_url, sync_cancel, sender.clone());
             }
         }
