@@ -96,6 +96,7 @@ impl eframe::App for NimbleGui {
                             files_processed: processed,
                             total_files: total,
                         };
+                        ctx.request_repaint();  // Add this line to force UI update
                     }
                     CommandMessage::SyncComplete => {
                         self.state = GuiState::Idle;
@@ -139,13 +140,17 @@ impl eframe::App for NimbleGui {
                         self.server_panel.handle_command(&msg);
                         self.state = GuiState::Idle;
                     }
+                    CommandMessage::ScanningStatus(message) => {
+                        self.state = GuiState::Scanning { message };
+                        ctx.request_repaint();
+                    }
                 }
             }
         });
 
         egui::TopBottomPanel::bottom("footer").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                match self.state {
+                match &self.state {
                     GuiState::Idle => {
                         ui.label("Ready");
                     },
@@ -154,14 +159,13 @@ impl eframe::App for NimbleGui {
                     },
                     GuiState::GeneratingSRF { progress, .. } => {
                         ui.label("Generating SRF...");
-                        ui.add(egui::ProgressBar::new(progress));
-                    },
-                    GuiState::Syncing { .. } => {
-                        ui.label("Syncing...");
+                        ui.add(egui::ProgressBar::new(*progress));
                     },
                     GuiState::Launching => {
                         ui.label("Launching...");
                     },
+                    // Remove sync and scanning states from footer since they're shown in the main panel
+                    _ => {}
                 }
             });
         });

@@ -60,24 +60,9 @@ impl ServerPanel {
                 ui.spinner();
                 ui.label("Connecting to server...");
             },
-            GuiState::Syncing { progress, current_file, files_processed, total_files } => {
-                // Show repository info but disable interaction
-                ui.group(|ui| {
-                    ui.add_enabled_ui(false, |ui| {
-                        self.repository_view.show(ui, sender, state);
-                    });
-                });
-                
-                // Show sync progress
-                ui.group(|ui| {
-                    ui.label(format!("Syncing: {} / {} files", files_processed, total_files));
-                    ui.label(format!("Current file: {}", current_file));
-                    ui.add(egui::ProgressBar::new(*progress).show_percentage().animate(true));
-                    
-                    if ui.button("Cancel Sync").clicked() && sender.is_some() {
-                        sender.unwrap().send(CommandMessage::CancelSync).ok();
-                    }
-                });
+            GuiState::Syncing { .. } | GuiState::Scanning { .. } => {
+                // Show repository view first
+                self.repository_view.show(ui, sender, state);
             },
             GuiState::Launching => {
                 ui.spinner();

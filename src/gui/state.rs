@@ -22,6 +22,7 @@ pub enum CommandMessage {
     LaunchComplete,
     LaunchError(String),
     Disconnect,
+    ScanningStatus(String),
 }
 
 pub struct CommandChannels {
@@ -59,6 +60,9 @@ pub enum GuiState {
         current_mod: String,
         mods_processed: usize,
         total_mods: usize,
+    },
+    Scanning {
+        message: String,
     },
 }
 

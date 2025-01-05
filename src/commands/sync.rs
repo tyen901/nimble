@@ -1,15 +1,17 @@
 use crate::commands::gen_srf::{gen_srf_for_mod, open_cache_or_gen_srf};
+use crate::gui::state::CommandMessage;
 use crate::mod_cache::ModCache;
 use crate::{repository, srf};
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use snafu::{ResultExt, Snafu};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom};
+use std::io::{self, BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use tempfile::tempfile;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::mpsc::Sender;
 
 #[derive(Debug)]
 struct DownloadCommand {
@@ -49,13 +51,14 @@ pub enum Error {
 
 pub struct SyncContext {
     pub cancel: Arc<AtomicBool>,
-    // Add other context fields as needed
+    pub status_sender: Option<Sender<CommandMessage>>,
 }
 
 impl Default for SyncContext {
     fn default() -> Self {
         Self {
-            cancel: Arc::new(AtomicBool::new(false))
+            cancel: Arc::new(AtomicBool::new(false)),
+            status_sender: None,
         }
     }
 }
@@ -218,35 +221,95 @@ fn execute_command_list(
     context: &SyncContext,
 ) -> Result<(), Error> {
     for (i, command) in commands.iter().enumerate() {
-        if context.cancel.load(Ordering::Relaxed) {
+        if context.cancel.load(Ordering::SeqCst) {
             return Err(Error::Cancelled);
         }
 
         println!("downloading {} of {} - {}", i, commands.len(), command.file);
 
-        // download into temp file first in case we have a failure. this avoids us writing garbage data
-        // which will later make us crash in gen_srf
-        let mut temp_download_file = tempfile().context(IoSnafu)?;
+        // Report progress to GUI
+        if let Some(sender) = &context.status_sender {
+            sender.send(CommandMessage::SyncProgress {
+                file: command.file.clone(),
+                progress: i as f32 / commands.len() as f32,
+                processed: i,
+                total: commands.len(),
+            }).ok();
+        }
 
+        // download into temp file first
+        let mut temp_download_file = tempfile().context(IoSnafu)?;
         let remote_url = format!("{}{}", remote_base, command.file);
 
-        let response = agent.get(&remote_url).call().context(HttpSnafu {
+        // Set up the request but don't execute it yet
+        let request = agent.get(&remote_url);
+
+        // Check cancel before starting download
+        if context.cancel.load(Ordering::SeqCst) {
+            return Err(Error::Cancelled);
+        }
+
+        let response = request.call().context(HttpSnafu {
             url: remote_url.clone(),
         })?;
 
-        let pb = response
+        let total_size = response
             .header("Content-Length")
-            .and_then(|len| len.parse().ok())
-            .map_or_else(ProgressBar::new_spinner, ProgressBar::new);
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
 
+        let pb = ProgressBar::new(total_size);
         pb.set_style(ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
             .unwrap()
             .with_key("eta", |state: &ProgressState, w: &mut dyn std::fmt::Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
             .progress_chars("#>-"));
 
-        let reader = response.into_reader();
+        let mut reader = response.into_reader();
+        let mut downloaded = 0;
+        let chunk_size = 8192; // Smaller chunks for more frequent cancel checks
+        let mut buffer = vec![0; chunk_size];
 
-        std::io::copy(&mut pb.wrap_read(reader), &mut temp_download_file).context(IoSnafu)?;
+        loop {
+            if context.cancel.load(Ordering::SeqCst) {
+                pb.finish_and_clear();
+                return Err(Error::Cancelled);
+            }
+
+            match reader.read(&mut buffer) {
+                Ok(0) => break, // EOF
+                Ok(n) => {
+                    if context.cancel.load(Ordering::SeqCst) {
+                        pb.finish_and_clear();
+                        return Err(Error::Cancelled);
+                    }
+
+                    temp_download_file.write_all(&buffer[..n]).context(IoSnafu)?;
+                    downloaded += n;
+                    pb.set_position(downloaded as u64);
+
+                    // Update progress more frequently
+                    if let Some(sender) = &context.status_sender {
+                        sender.send(CommandMessage::SyncProgress {
+                            file: command.file.clone(),
+                            progress: downloaded as f32 / total_size as f32,
+                            processed: i,
+                            total: commands.len(),
+                        }).ok();
+                    }
+                }
+                Err(e) => {
+                    pb.finish_and_clear();
+                    return Err(Error::Io { source: e });
+                }
+            }
+        }
+
+        pb.finish_and_clear();
+
+        // Final cancel check before writing to disk
+        if context.cancel.load(Ordering::SeqCst) {
+            return Err(Error::Cancelled);
+        }
 
         // copy from temp to permanent file
         let file_path = local_base.join(Path::new(&command.file));
@@ -280,14 +343,36 @@ pub fn sync_with_context(
     dry_run: bool,
     context: &SyncContext,
 ) -> Result<(), Error> {
+    // Check cancel flag at each major step
+    let check_cancelled = || {
+        if context.cancel.load(Ordering::SeqCst) {
+            return Err(Error::Cancelled);
+        }
+        Ok(())
+    };
+
+    if let Some(sender) = &context.status_sender {
+        sender.send(CommandMessage::ScanningStatus("Fetching repository information...".into())).ok();
+    }
+    check_cancelled()?;
+
     println!("Starting sync process from {}", repo_url);
     
     let remote_repo = repository::get_repository_info(agent, &format!("{repo_url}/repo.json"))
         .context(RepositoryFetchSnafu)?;
+    check_cancelled()?;
+
     println!("Retrieved repository information. Version: {}", remote_repo.version);
+
+    if let Some(sender) = &context.status_sender {
+        sender.send(CommandMessage::ScanningStatus("Scanning local files...".into())).ok();
+    }
+    check_cancelled()?;
 
     let mut mod_cache = open_cache_or_gen_srf(base_path).context(ModCacheOpenSnafu)?;
     let check = diff_repo(&mod_cache, &remote_repo);
+    check_cancelled()?;
+
     println!("Found {} mod(s) that need updating", check.len());
 
     // remove all mods to check from cache, we'll read them later
@@ -339,7 +424,7 @@ pub fn sync_with_context(
             let writer = BufWriter::new(File::create(base_path.join("nimble-cache.json")).unwrap());
             serde_json::to_writer(writer, &mod_cache).unwrap();
             
-            if !failed_mods.is_empty() {
+            if (!failed_mods.is_empty()) {
                 println!("Sync completed with some failures:");
                 for failed in failed_mods {
                     println!("  - Failed to sync: {}", failed);

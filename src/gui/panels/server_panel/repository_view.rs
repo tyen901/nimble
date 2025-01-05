@@ -31,7 +31,6 @@ impl CommandHandler for RepositoryView {}
 
 impl RepositoryView {
     pub fn show(&mut self, ui: &mut egui::Ui, sender: Option<&Sender<CommandMessage>>, state: &GuiState) {
-        // Extract repository data outside the closure
         let repo_data = self.repository.as_ref().map(|repo| {
             (
                 repo.repo_name.clone(),
@@ -43,25 +42,26 @@ impl RepositoryView {
 
         if let Some((repo_name, version, required_mods_count, optional_mods_count)) = repo_data {
             ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    // Repository header section with disconnect button
-                    ui.heading(&repo_name);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Disconnect").clicked() && sender.is_some() {
-                            sender.unwrap().send(CommandMessage::Disconnect).ok();
-                        }
-                    });
-                });
-                
                 // Repository info section
                 ui.group(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.heading(&repo_name);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let is_active = !matches!(state, GuiState::Syncing { .. } | GuiState::Scanning { .. });
+                            if is_active {
+                                if ui.button("Disconnect").clicked() && sender.is_some() {
+                                    sender.unwrap().send(CommandMessage::Disconnect).ok();
+                                }
+                            }
+                        });
+                    });
                     ui.label(format!("Version: {}", version));
                     ui.label(format!("Required Mods: {}", required_mods_count));
                     ui.label(format!("Optional Mods: {}", optional_mods_count));
                 });
                 ui.add_space(8.0);
 
-                // Path section with edit button
+                // Path section
                 ui.group(|ui| {
                     ui.label("Local Installation Path:");
                     ui.horizontal(|ui| {
@@ -70,26 +70,56 @@ impl RepositoryView {
                         ui.horizontal_wrapped(|ui| {
                             ui.label(path_str);
                         });
-                        if ui.button("📂 Edit").clicked() {
-                            if self.path_picker.show_picker() && sender.is_some() {
-                                sender.unwrap().send(CommandMessage::ConfigChanged).ok();
+                        let is_active = !matches!(state, GuiState::Syncing { .. } | GuiState::Scanning { .. });
+                        if is_active {
+                            if ui.button("📂 Edit").clicked() {
+                                if self.path_picker.show_picker() && sender.is_some() {
+                                    sender.unwrap().send(CommandMessage::ConfigChanged).ok();
+                                }
                             }
                         }
                     });
                 });
-                ui.add_space(4.0);
-            });
-
-            // Only show action buttons if not in syncing state
-            if !matches!(state, GuiState::Syncing { .. }) {
-                self.status.show(ui);
                 ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    self.show_sync_button(ui, sender);
-                    ui.add_space(8.0);
-                    self.show_launch_button(ui, sender);
-                });
-            }
+
+                // Status/Progress section
+                match state {
+                    GuiState::Scanning { message } => {
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(message);
+                            });
+                        });
+                    }
+                    GuiState::Syncing { progress, current_file, files_processed, total_files } => {
+                        ui.group(|ui| {
+                            ui.heading("Sync Progress");
+                            ui.label(format!("Files: {} / {}", files_processed, total_files));
+                            ui.label(format!("Current: {}", current_file));
+                            ui.add(egui::ProgressBar::new(*progress).show_percentage());
+                            
+                            if ui.button("Stop").clicked() {
+                                // Use SeqCst ordering for immediate visibility
+                                self.sync_cancel.store(true, Ordering::SeqCst);
+                                if let Some(sender) = sender {
+                                    sender.send(CommandMessage::CancelSync).ok();
+                                }
+                            }
+                        });
+                    }
+                    _ => {
+                        // Action buttons
+                        ui.horizontal(|ui| {
+                            self.show_sync_button(ui, sender);
+                            ui.add_space(8.0);
+                            self.show_launch_button(ui, sender);
+                        });
+                        // Status messages
+                        self.status.show(ui);
+                    }
+                }
+            });
         }
     }
 
@@ -112,7 +142,7 @@ impl RepositoryView {
             }
             
             if let Some(sender) = sender {
-                self.sync_cancel.store(false, Ordering::Relaxed); // Reset cancel flag
+                self.sync_cancel.store(false, Ordering::SeqCst); // Use SeqCst here too
                 Self::start_sync_with_context(base_path, &repo_url, sync_cancel, sender.clone());
             }
         }
@@ -151,6 +181,7 @@ impl RepositoryView {
         let repo_url = repo_url.to_string();
         let context = crate::commands::sync::SyncContext {
             cancel: sync_cancel,
+            status_sender: Some(sender.clone()),
         };
         
         std::thread::spawn(move || {
