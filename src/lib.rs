@@ -1,3 +1,8 @@
+#![allow(warnings)]          // Disables all warnings for the entire file
+#![allow(dead_code)]         // For unused code
+#![allow(unused_variables)]  // For unused variables
+#![allow(unused_imports)]    // For unused imports
+
 use std::path::PathBuf;
 use std::error::Error;
 use std::fmt;
