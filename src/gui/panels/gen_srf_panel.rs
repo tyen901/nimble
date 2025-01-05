@@ -28,6 +28,8 @@ impl GenSrfPanel {
             ui.label("Path:");
             ui.text_edit_singleline(&mut self.path);
         });
+        
+        ui.add_space(8.0);
 
         if ui.button("Generate").clicked() {
             // Clone path here before the closures

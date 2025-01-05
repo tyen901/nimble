@@ -47,7 +47,7 @@ impl ServerPanel {
         match state {
             GuiState::Idle => {
                 if self.repository_view.repository().is_none() {
-                    self.connection_view.show(ui, sender);
+                    self.connection_view.show(ui, sender, state);
                 } else {
                     self.repository_view.show(ui, sender, state);
                 }

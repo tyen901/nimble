@@ -1,6 +1,5 @@
 use eframe::egui;
 use std::path::PathBuf;
-use rfd::FileDialog;
 
 pub struct PathPicker {
     pub path: String,

@@ -1,6 +1,6 @@
 use eframe::egui;
 use std::sync::mpsc::Sender;
-use crate::gui::state::CommandMessage;
+use crate::gui::state::{CommandMessage, GuiState};
 use crate::gui::widgets::{StatusDisplay, CommandHandler};
 
 pub struct ConnectionView {
@@ -20,7 +20,7 @@ impl Default for ConnectionView {
 }
 
 impl ConnectionView {
-    pub fn show(&mut self, ui: &mut egui::Ui, sender: Option<&Sender<CommandMessage>>) {
+    pub fn show(&mut self, ui: &mut egui::Ui, sender: Option<&Sender<CommandMessage>>, _state: &GuiState) {
         self.status.show(ui);
 
         ui.horizontal(|ui| {
