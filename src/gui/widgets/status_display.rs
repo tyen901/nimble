@@ -20,6 +20,10 @@ impl StatusDisplay {
         self.is_error = is_error;
     }
 
+    pub fn set_error(&mut self, message: impl Into<String>) {
+        self.set_message(message, true);
+    }
+
     pub fn clear(&mut self) {
         self.message = None;
     }

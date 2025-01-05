@@ -1,74 +1,62 @@
 use eframe::egui;
-use crate::commands;
-use crate::gui::state::{CommandMessage, GuiState};
-use crate::gui::widgets::{PathPicker, StatusDisplay};
 use std::sync::mpsc::Sender;
-use std::thread;
+use std::path::PathBuf;
+use crate::gui::state::{CommandMessage, GuiState};
+use crate::gui::widgets::{StatusDisplay, CommandHandler};
 
 pub struct GenSrfPanel {
-    path_picker: PathPicker,
+    path: String,
     status: StatusDisplay,
 }
+
+impl CommandHandler for GenSrfPanel {}
 
 impl Default for GenSrfPanel {
     fn default() -> Self {
         Self {
-            path_picker: PathPicker::new("Mods Path:", "Select Mods Directory"),
+            path: String::new(),
             status: StatusDisplay::default(),
         }
     }
 }
 
 impl GenSrfPanel {
-    fn validate(&self) -> Result<(), String> {
-        let path = self.path_picker.path();
-        if !path.exists() {
-            return Err("Mods path does not exist".into());
+    pub fn show(&mut self, ui: &mut egui::Ui, sender: Option<&Sender<CommandMessage>>, _state: &GuiState) {
+        self.status.show(ui);
+
+        ui.horizontal(|ui| {
+            ui.label("Path:");
+            ui.text_edit_singleline(&mut self.path);
+        });
+
+        if ui.button("Generate").clicked() {
+            // Clone path here before the closures
+            let path = self.path.clone();
+            let status = &mut self.status;
+            
+            <Self as CommandHandler>::handle_validation(
+                || Self::validate(&path),
+                |e| status.set_error(e),
+                |s| Self::start_generation(&path, s.unwrap().clone()),
+                sender
+            );
         }
-        if !path.is_dir() {
-            return Err("Mods path must be a directory".into());
+    }
+
+    fn validate(path: &str) -> Result<(), String> {
+        if path.trim().is_empty() {
+            return Err("Path is required".into());
         }
         Ok(())
     }
 
-    fn start_gen_srf(&self, sender: Sender<CommandMessage>) {
-        let base_path = self.path_picker.path();
-
-        thread::spawn(move || {
-            match commands::gen_srf::gen_srf(&base_path) {
+    fn start_generation(path: &str, sender: Sender<CommandMessage>) {
+        let path = PathBuf::from(path);
+        std::thread::spawn(move || {
+            match crate::commands::gen_srf::gen_srf(&path) {
                 Ok(()) => sender.send(CommandMessage::GenSrfComplete),
                 Err(e) => sender.send(CommandMessage::GenSrfError(e.to_string())),
             }.ok();
         });
-    }
-
-    pub fn show(&mut self, ui: &mut egui::Ui, state: &GuiState, sender: Option<&Sender<CommandMessage>>) {
-        ui.heading("Generate SRF");
-        ui.add_space(8.0);
-        
-        self.status.show(ui);
-        
-        match state {
-            GuiState::GeneratingSRF { progress, current_mod, mods_processed, total_mods } => {
-                ui.label(format!("Processing: {} / {} mods", mods_processed, total_mods));
-                ui.label(format!("Current mod: {}", current_mod));
-                ui.add(egui::ProgressBar::new(*progress)
-                    .show_percentage()
-                    .animate(true));
-            },
-            GuiState::Idle => {
-                self.path_picker.show(ui);
-                
-                if ui.button("Generate SRF").clicked() {
-                    self.status.clear();
-                    if let Err(e) = self.validate() {
-                        self.status.set_message(e, true);
-                    } else if let Some(sender) = sender {
-                        self.start_gen_srf(sender.clone());
-                    }
-                }
-            },
-            _ => {}
-        }
     }
 }

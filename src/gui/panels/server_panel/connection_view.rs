@@ -1,27 +1,27 @@
 use eframe::egui;
 use std::sync::mpsc::Sender;
 use crate::gui::state::CommandMessage;
+use crate::gui::widgets::{StatusDisplay, CommandHandler};
 
 pub struct ConnectionView {
     pub repo_url: String,
-    error: Option<String>,
+    status: StatusDisplay,
 }
+
+impl CommandHandler for ConnectionView {}
 
 impl Default for ConnectionView {
     fn default() -> Self {
         Self {
             repo_url: String::new(),
-            error: None,
+            status: StatusDisplay::default(),
         }
     }
 }
 
 impl ConnectionView {
     pub fn show(&mut self, ui: &mut egui::Ui, sender: Option<&Sender<CommandMessage>>) {
-        if let Some(error) = &self.error {
-            ui.colored_label(ui.style().visuals.error_fg_color, error);
-            ui.add_space(8.0);
-        }
+        self.status.show(ui);
 
         ui.horizontal(|ui| {
             ui.label("Repository URL:");
@@ -29,25 +29,28 @@ impl ConnectionView {
         });
 
         if ui.button("Connect").clicked() {
-            self.error = None;
-            if let Err(e) = self.validate() {
-                self.error = Some(e);
-            } else if let Some(sender) = sender {
-                sender.send(CommandMessage::ConnectionStarted).ok();
-                self.connect_to_server(sender.clone());
-            }
+            // Clone values before using in closures
+            let repo_url = self.repo_url.clone();
+            let status = &mut self.status;
+            
+            <Self as CommandHandler>::handle_validation(
+                || Self::validate(&repo_url),
+                |e| status.set_error(e),
+                |s| Self::connect_to_server(&repo_url, s.unwrap().clone()),
+                sender
+            );
         }
     }
 
-    fn validate(&self) -> Result<(), String> {
-        if self.repo_url.trim().is_empty() {
+    fn validate(repo_url: &str) -> Result<(), String> {
+        if repo_url.trim().is_empty() {
             return Err("Repository URL is required".into());
         }
         Ok(())
     }
 
-    fn connect_to_server(&self, sender: Sender<CommandMessage>) {
-        let repo_url = self.repo_url.clone();
+    fn connect_to_server(repo_url: &str, sender: Sender<CommandMessage>) {
+        let repo_url = repo_url.to_string();
         std::thread::spawn(move || {
             let mut agent = ureq::agent();
             

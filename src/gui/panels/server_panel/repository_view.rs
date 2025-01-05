@@ -1,6 +1,7 @@
 use eframe::egui;
+use std::path::PathBuf;
 use crate::repository::Repository;
-use crate::gui::widgets::PathPicker;
+use crate::gui::widgets::{PathPicker, StatusDisplay, CommandHandler};
 use crate::gui::state::{CommandMessage, GuiState};
 use std::sync::mpsc::Sender;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,7 +11,7 @@ pub struct RepositoryView {
     pub path_picker: PathPicker,
     repository: Option<Repository>,
     repo_url: String,
-    error: Option<String>,
+    status: StatusDisplay,
     sync_cancel: Arc<AtomicBool>,
 }
 
@@ -20,11 +21,13 @@ impl Default for RepositoryView {
             path_picker: PathPicker::new("Base Path:", "Select Mods Directory"),
             repository: None,
             repo_url: String::new(),
-            error: None,
+            status: StatusDisplay::default(),
             sync_cancel: Arc::new(AtomicBool::new(false)),
         }
     }
 }
+
+impl CommandHandler for RepositoryView {}
 
 impl RepositoryView {
     pub fn show(&mut self, ui: &mut egui::Ui, sender: Option<&Sender<CommandMessage>>, state: &GuiState) {
@@ -46,21 +49,47 @@ impl RepositoryView {
                 },
                 _ => {
                     self.path_picker.show(ui);
-                    
-                    if let Some(error) = &self.error {
-                        ui.colored_label(ui.style().visuals.error_fg_color, error);
-                    }
+                    self.status.show(ui);
 
                     ui.horizontal(|ui| {
-                        if ui.button("Sync Mods").clicked() {
-                            self.handle_sync(sender);
-                        }
-                        
-                        if ui.button("Launch Game").clicked() {
-                            self.handle_launch(sender);
-                        }
+                        self.show_sync_button(ui, sender);
+                        self.show_launch_button(ui, sender);
                     });
                 }
+            }
+        }
+    }
+
+    fn show_sync_button(&mut self, ui: &mut egui::Ui, sender: Option<&Sender<CommandMessage>>) {
+        if ui.button("Sync Mods").clicked() {
+            // Extract all values before any validation or status updates
+            let base_path = self.path_picker.path();
+            let repo_url = self.repo_url.clone();
+            let sync_cancel = self.sync_cancel.clone();
+            
+            if base_path.to_str().unwrap_or("").trim().is_empty() {
+                self.status.set_error("Base path is required");
+                return;
+            }
+            
+            if let Some(sender) = sender {
+                Self::start_sync_with_context(base_path, &repo_url, sync_cancel, sender.clone());
+            }
+        }
+    }
+
+    fn show_launch_button(&mut self, ui: &mut egui::Ui, sender: Option<&Sender<CommandMessage>>) {
+        if ui.button("Launch Game").clicked() {
+            // Extract path before validation
+            let base_path = self.path_picker.path();
+            
+            if base_path.to_str().unwrap_or("").trim().is_empty() {
+                self.status.set_error("Base path is required");
+                return;
+            }
+            
+            if let Some(sender) = sender {
+                sender.send(CommandMessage::LaunchStarted).ok();
             }
         }
     }
@@ -74,36 +103,10 @@ impl RepositoryView {
         self.repository.as_ref()
     }
 
-    fn handle_sync(&mut self, sender: Option<&Sender<CommandMessage>>) {
-        self.error = None;
-        if let Err(e) = self.validate_paths() {
-            self.error = Some(e);
-        } else if let Some(sender) = sender {
-            self.start_sync(sender.clone());
-        }
-    }
-
-    fn handle_launch(&mut self, sender: Option<&Sender<CommandMessage>>) {
-        self.error = None;
-        if let Err(e) = self.validate_paths() {
-            self.error = Some(e);
-        } else if let Some(sender) = sender {
-            sender.send(CommandMessage::LaunchStarted).ok();
-        }
-    }
-
-    fn validate_paths(&self) -> Result<(), String> {
-        if self.path_picker.path().to_str().unwrap_or("").trim().is_empty() {
-            return Err("Base path is required".into());
-        }
-        Ok(())
-    }
-
-    fn start_sync(&self, sender: Sender<CommandMessage>) {
-        let base_path = self.path_picker.path();
-        let repo_url = self.repo_url.clone();
+    fn start_sync_with_context(base_path: PathBuf, repo_url: &str, sync_cancel: Arc<AtomicBool>, sender: Sender<CommandMessage>) {
+        let repo_url = repo_url.to_string();
         let context = crate::commands::sync::SyncContext {
-            cancel: self.sync_cancel.clone(),
+            cancel: sync_cancel,
         };
         
         std::thread::spawn(move || {

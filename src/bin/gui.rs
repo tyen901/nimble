@@ -65,7 +65,7 @@ impl eframe::App for NimbleGui {
         egui::CentralPanel::default().show(ctx, |ui| {
             match self.selected_tab {
                 Tab::Server => self.server_panel.show(ui, &self.state, Some(&self.channels.sender)),
-                Tab::GenSrf => self.gen_srf_panel.show(ui, &self.state, Some(&self.channels.sender)),
+                Tab::GenSrf => self.gen_srf_panel.show(ui, Some(&self.channels.sender), &self.state),
             }
             
             while let Ok(msg) = self.channels.receiver.try_recv() {
