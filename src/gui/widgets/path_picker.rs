@@ -2,42 +2,62 @@ use eframe::egui;
 use std::path::PathBuf;
 
 pub struct PathPicker {
-    pub path: String,
-    pub label: String,
-    pub dialog_title: String,
+    path: PathBuf,
+    label: String,
+    dialog_title: String,
 }
 
 impl PathPicker {
-    pub fn new(label: impl Into<String>, dialog_title: impl Into<String>) -> Self {
+    pub fn new(label: &str, dialog_title: &str) -> Self {
         Self {
-            path: String::new(),
-            label: label.into(),
-            dialog_title: dialog_title.into(),
+            path: PathBuf::new(),
+            label: label.to_string(),
+            dialog_title: dialog_title.to_string(),
         }
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui) -> Option<PathBuf> {
-        let mut selected = None;
-        ui.horizontal(|ui| {
-            ui.label(&self.label);
-            ui.text_edit_singleline(&mut self.path);
-            if ui.button("Browse").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_title(&self.dialog_title)
-                    .pick_folder() {
-                        self.path = path.display().to_string();
-                        selected = Some(path);
-                }
-            }
-        });
-        selected
-    }
-
     pub fn path(&self) -> PathBuf {
-        PathBuf::from(&self.path)
+        self.path.clone()
     }
 
     pub fn set_path(&mut self, path: &PathBuf) {
-        self.path = path.display().to_string();
+        self.path = path.clone();
+    }
+
+    // Return true if the path was changed
+    pub fn show(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            ui.label(&self.label);
+            let path_string = self.path.to_string_lossy().to_string();
+            let mut text = path_string.clone();
+            if ui.text_edit_singleline(&mut text).changed() {
+                self.path = PathBuf::from(text);
+                changed = true;
+            }
+            if ui.button("Browse").clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .set_title(&self.dialog_title)
+                    .pick_folder() 
+                {
+                    self.path = path;
+                    changed = true;
+                }
+            }
+        });
+        changed
+    }
+
+    // Return true if the path was changed
+    pub fn show_picker(&mut self) -> bool {
+        if let Some(path) = rfd::FileDialog::new()
+            .set_title(&self.dialog_title)
+            .pick_folder() 
+        {
+            self.path = path;
+            true
+        } else {
+            false
+        }
     }
 }

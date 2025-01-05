@@ -280,14 +280,15 @@ pub fn sync_with_context(
     dry_run: bool,
     context: &SyncContext,
 ) -> Result<(), Error> {
+    println!("Starting sync process from {}", repo_url);
+    
     let remote_repo = repository::get_repository_info(agent, &format!("{repo_url}/repo.json"))
         .context(RepositoryFetchSnafu)?;
+    println!("Retrieved repository information. Version: {}", remote_repo.version);
 
     let mut mod_cache = open_cache_or_gen_srf(base_path).context(ModCacheOpenSnafu)?;
-
     let check = diff_repo(&mod_cache, &remote_repo);
-
-    println!("mods to check: {check:#?}");
+    println!("Found {} mod(s) that need updating", check.len());
 
     // remove all mods to check from cache, we'll read them later
     for r#mod in &check {
@@ -295,40 +296,67 @@ pub fn sync_with_context(
     }
 
     let mut download_commands = vec![];
+    let mut failed_mods = Vec::new();
 
     for r#mod in &check {
+        println!("Checking mod: {}", r#mod.mod_name);
         match diff_mod(agent, repo_url, base_path, r#mod) {
-            Ok(commands) => download_commands.extend(commands),
+            Ok(commands) => {
+                println!("  - Found {} file(s) to update", commands.len());
+                download_commands.extend(commands);
+            },
             Err(e) => {
                 eprintln!("Error diffing mod {}: {}", r#mod.mod_name, e);
-                continue; // Skip this mod but continue with others
+                failed_mods.push(r#mod.mod_name.clone());
+                continue;
             }
         }
     }
 
-    println!("download commands: {download_commands:#?}");
+    println!("Total files to download: {}", download_commands.len());
 
     if dry_run {
+        println!("Dry run completed");
         return Ok(());
     }
 
     let res = execute_command_list(agent, repo_url, base_path, &download_commands, context);
 
-    if let Err(e) = res {
-        println!("an error occured while downloading: {e}");
-        println!("you should retry this command");
+    match res {
+        Ok(()) => {
+            println!("Downloads completed successfully");
+            
+            // gen_srf for the mods we downloaded
+            println!("Generating SRF files for downloaded mods...");
+            for r#mod in &check {
+                println!("  - Generating SRF for {}", r#mod.mod_name);
+                let srf = gen_srf_for_mod(&base_path.join(Path::new(&r#mod.mod_name)));
+                mod_cache.insert(srf);
+            }
+
+            // reserialize the cache
+            println!("Updating mod cache...");
+            let writer = BufWriter::new(File::create(base_path.join("nimble-cache.json")).unwrap());
+            serde_json::to_writer(writer, &mod_cache).unwrap();
+            
+            if !failed_mods.is_empty() {
+                println!("Sync completed with some failures:");
+                for failed in failed_mods {
+                    println!("  - Failed to sync: {}", failed);
+                }
+            } else {
+                println!("Sync completed successfully!");
+            }
+            Ok(())
+        },
+        Err(Error::Cancelled) => {
+            println!("Sync was cancelled by user");
+            Err(Error::Cancelled)
+        },
+        Err(e) => {
+            println!("Sync failed: {}", e);
+            println!("You should retry the sync");
+            Err(e)
+        }
     }
-
-    // gen_srf for the mods we downloaded
-    for r#mod in &check {
-        let srf = gen_srf_for_mod(&base_path.join(Path::new(&r#mod.mod_name)));
-
-        mod_cache.insert(srf);
-    }
-
-    // reserialize the cache
-    let writer = BufWriter::new(File::create(base_path.join("nimble-cache.json")).unwrap());
-    serde_json::to_writer(writer, &mod_cache).unwrap();
-
-    Ok(())
 }

@@ -49,7 +49,7 @@ impl eframe::App for NimbleGui {
         }
     }
 
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Update window size in config
         // TODO: Implement window size change handling
 

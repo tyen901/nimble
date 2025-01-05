@@ -31,13 +31,50 @@ impl CommandHandler for RepositoryView {}
 
 impl RepositoryView {
     pub fn show(&mut self, ui: &mut egui::Ui, sender: Option<&Sender<CommandMessage>>, state: &GuiState) {
-        if let Some(repo) = &self.repository {
-            ui.heading(&repo.repo_name);
-            ui.label(format!("Version: {}", repo.version));
-            ui.label(format!("Required Mods: {}", repo.required_mods.len()));
-            ui.label(format!("Optional Mods: {}", repo.optional_mods.len()));
-            ui.add_space(8.0);
+        // Extract repository data outside the closure
+        let repo_data = self.repository.as_ref().map(|repo| {
+            (
+                repo.repo_name.clone(),
+                repo.version.clone(),
+                repo.required_mods.len(),
+                repo.optional_mods.len(),
+            )
+        });
 
+        if let Some((repo_name, version, required_mods_count, optional_mods_count)) = repo_data {
+            ui.vertical(|ui| {
+                // Repository header section
+                ui.heading(&repo_name);
+                ui.add_space(4.0);
+                
+                // Repository info section
+                ui.group(|ui| {
+                    ui.label(format!("Version: {}", version));
+                    ui.label(format!("Required Mods: {}", required_mods_count));
+                    ui.label(format!("Optional Mods: {}", optional_mods_count));
+                });
+                ui.add_space(8.0);
+
+                // Path section with edit button
+                ui.group(|ui| {
+                    ui.label("Local Installation Path:");
+                    ui.horizontal(|ui| {
+                        let path = self.path_picker.path();
+                        let path_str = path.to_str().unwrap_or("");
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(path_str);
+                        });
+                        if ui.button("📂 Edit").clicked() {
+                            if self.path_picker.show_picker() && sender.is_some() {
+                                sender.unwrap().send(CommandMessage::ConfigChanged).ok();
+                            }
+                        }
+                    });
+                });
+                ui.add_space(4.0);
+            });
+
+            // Handle state outside vertical layout to avoid borrow issues
             match state {
                 GuiState::Syncing { .. } => {
                     if let Some(sender) = sender {
@@ -48,11 +85,11 @@ impl RepositoryView {
                     }
                 },
                 _ => {
-                    self.path_picker.show(ui);
                     self.status.show(ui);
-
+                    ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         self.show_sync_button(ui, sender);
+                        ui.add_space(8.0);
                         self.show_launch_button(ui, sender);
                     });
                 }
