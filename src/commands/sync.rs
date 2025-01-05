@@ -32,6 +32,8 @@ pub enum Error {
     Diff { source: diff::Error },
     #[snafu(display("Sync was cancelled"))]
     Cancelled,
+    #[snafu(display("Failed to serialize cache: {}", source))]
+    CacheSerialization { source: serde_json::Error },
 }
 
 pub struct SyncContext {
@@ -48,6 +50,63 @@ impl Default for SyncContext {
     }
 }
 
+fn create_progress_bar(total_size: u64) -> ProgressBar {
+    let pb = ProgressBar::new(total_size);
+    pb.set_style(ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+        .unwrap()
+        .with_key("eta", |state: &ProgressState, w: &mut dyn std::fmt::Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
+        .progress_chars("#>-"));
+    pb
+}
+
+fn download_file(
+    agent: &ureq::Agent,
+    remote_url: &str,
+    temp_file: &mut File,
+    context: &SyncContext,
+    progress_callback: impl Fn(u64, u64),
+) -> Result<u64, Error> {
+    let response = agent.get(remote_url).call().context(HttpSnafu {
+        url: remote_url.to_string(),
+    })?;
+
+    let total_size = response
+        .header("Content-Length")
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
+
+    let mut reader = response.into_reader();
+    let mut downloaded = 0;
+    let mut buffer = vec![0; 8192];
+
+    while let Ok(n) = reader.read(&mut buffer) {
+        if n == 0 { break; }
+        if context.cancel.load(Ordering::SeqCst) {
+            return Err(Error::Cancelled);
+        }
+
+        temp_file.write_all(&buffer[..n]).context(IoSnafu)?;
+        downloaded += n;
+        progress_callback(downloaded as u64, total_size);
+    }
+
+    Ok(total_size)
+}
+
+fn update_mod_cache(base_path: &Path, mods: &[&repository::Mod], mod_cache: &mut ModCache) -> Result<(), Error> {
+    println!("Generating SRF files for downloaded mods...");
+    for r#mod in mods {
+        println!("  - Generating SRF for {}", r#mod.mod_name);
+        let srf = gen_srf_for_mod(&base_path.join(Path::new(&r#mod.mod_name)), None);
+        mod_cache.insert(srf);
+    }
+
+    println!("Updating mod cache...");
+    let writer = BufWriter::new(File::create(base_path.join("nimble-cache.json")).context(IoSnafu)?);
+    serde_json::to_writer(writer, &mod_cache).context(CacheSerializationSnafu)?;
+    Ok(())
+}
+
 fn execute_command_list(
     agent: &mut ureq::Agent,
     remote_base: &str,
@@ -62,67 +121,37 @@ fn execute_command_list(
 
         println!("downloading {} of {} - {}", i, commands.len(), command.file);
 
-        // Report file progress to GUI
         if let Some(sender) = &context.status_sender {
             sender.send(CommandMessage::SyncProgress {
                 file: command.file.clone(),
-                progress: 0.0, // Start at 0 for new file
+                progress: 0.0,
                 processed: i,
                 total: commands.len(),
             }).ok();
         }
 
-        // Download into temp file first
         let mut temp_download_file = tempfile().context(IoSnafu)?;
         let remote_url = format!("{}{}", remote_base, command.file);
-        let response = agent.get(&remote_url).call().context(HttpSnafu {
-            url: remote_url.clone(),
+        
+        let pb: ProgressBar = create_progress_bar(0);
+        let sender = context.status_sender.clone();
+        let file_name = command.file.clone();
+        let current_index = i;
+        let total_files = commands.len();
+
+        let pb_ref = pb.clone(); // Clone the progress bar for the closure
+
+        let total_size = download_file(agent, &remote_url, &mut temp_download_file, context, move |downloaded, total| {
+            pb_ref.set_position(downloaded);
+            if let Some(sender) = &sender {
+                sender.send(CommandMessage::SyncProgress {
+                    file: file_name.clone(),
+                    progress: downloaded as f32 / total as f32,
+                    processed: current_index,
+                    total: total_files,
+                }).ok();
+            }
         })?;
-
-        let total_size = response
-            .header("Content-Length")
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(0);
-
-        let pb = ProgressBar::new(total_size);
-        pb.set_style(ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
-            .unwrap()
-            .with_key("eta", |state: &ProgressState, w: &mut dyn std::fmt::Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
-            .progress_chars("#>-"));
-
-        let mut reader = response.into_reader();
-        let mut downloaded = 0;
-        let mut buffer = vec![0; 8192];
-
-        loop {
-            if context.cancel.load(Ordering::SeqCst) {
-                pb.finish_and_clear();
-                return Err(Error::Cancelled);
-            }
-
-            match reader.read(&mut buffer) {
-                Ok(0) => break, // EOF
-                Ok(n) => {
-                    temp_download_file.write_all(&buffer[..n]).context(IoSnafu)?;
-                    downloaded += n;
-                    pb.set_position(downloaded as u64);
-
-                    // Update progress
-                    if let Some(sender) = &context.status_sender {
-                        sender.send(CommandMessage::SyncProgress {
-                            file: command.file.clone(),
-                            progress: downloaded as f32 / total_size as f32,
-                            processed: i,
-                            total: commands.len(),
-                        }).ok();
-                    }
-                }
-                Err(e) => {
-                    pb.finish_and_clear();
-                    return Err(Error::Io { source: e });
-                }
-            }
-        }
 
         pb.finish_and_clear();
 
@@ -224,19 +253,9 @@ pub fn sync_with_context(
         Ok(()) => {
             println!("Downloads completed successfully");
             
-            // gen_srf for the mods we downloaded
-            println!("Generating SRF files for downloaded mods...");
-            for r#mod in &check {
-                println!("  - Generating SRF for {}", r#mod.mod_name);
-                let srf = gen_srf_for_mod(&base_path.join(Path::new(&r#mod.mod_name)), None);
-                mod_cache.insert(srf);
-            }
+            let check_refs: Vec<&repository::Mod> = check.iter().copied().collect();
+            update_mod_cache(base_path, &check_refs, &mut mod_cache)?;
 
-            // reserialize the cache
-            println!("Updating mod cache...");
-            let writer = BufWriter::new(File::create(base_path.join("nimble-cache.json")).unwrap());
-            serde_json::to_writer(writer, &mod_cache).unwrap();
-            
             if (!failed_mods.is_empty()) {
                 println!("Sync completed with some failures:");
                 for failed in failed_mods {
