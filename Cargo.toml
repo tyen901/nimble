@@ -34,5 +34,9 @@ lto = "thin"
 # tinyvec = { version = "1.5", features = ["alloc", "rustc_1_55"] }
 
 [[bin]]
+name = "nimble-cli"
+path = "src/bin/cli-main.rs"
+
+[[bin]]
 name = "nimble-gui"
-path = "src/bin/gui.rs"
+path = "src/bin/gui-main.rs"
