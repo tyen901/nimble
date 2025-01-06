@@ -6,7 +6,7 @@ use crate::repository::{Repository, Mod};
 use crate::md5_digest::Md5Digest;
 
 pub fn scan_directory(path: &Path) -> Vec<Mod> {
-    WalkDir::new(path)
+    let mut mods: Vec<Mod> = WalkDir::new(path)
         .min_depth(1)
         .max_depth(1)
         .into_iter()
@@ -17,7 +17,10 @@ pub fn scan_directory(path: &Path) -> Vec<Mod> {
             checksum: Md5Digest::default(),
             enabled: true,
         })
-        .collect()
+        .collect();
+
+    mods.sort_by(|a, b| a.mod_name.cmp(&b.mod_name));
+    mods
 }
 
 pub fn load_existing_repo(path: &Path) -> Result<Repository, String> {
@@ -35,10 +38,14 @@ pub fn update_mods_list(repo: &mut Repository, new_mods: Vec<Mod>) {  // Removed
 }
 
 pub fn save_repo(path: &Path, repo: &Repository) -> Result<(), String> {
+    // Create a clone for sorting
+    let mut repo_to_save = repo.clone();
+    repo_to_save.required_mods.sort_by(|a, b| a.mod_name.cmp(&b.mod_name));
+    
     std::fs::File::create(path.join("repo.json"))
         .map_err(|e| format!("Failed to create repo.json: {}", e))
         .and_then(|file| {
-            serde_json::to_writer(file, repo)  // Removed _pretty to get minified output
+            serde_json::to_writer(file, &repo_to_save)
                 .map_err(|e| format!("Failed to write repo.json: {}", e))
         })
 }
