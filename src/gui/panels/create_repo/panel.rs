@@ -53,29 +53,24 @@ impl CreateRepoPanel {
             }
         }
 
+        // Scan for mods in directory first
+        let found_mods = scanner::scan_directory(path);
+
         match scanner::load_existing_repo(path) {
-            Ok(loaded_repo) => {
+            Ok(mut loaded_repo) => {
+                // Update required_mods with found mods, preserving enabled state
+                loaded_repo.required_mods = found_mods;
                 self.state.repo = loaded_repo;
-                self.state.status.set_info("Loaded existing repo.json");
-                self.scan_for_changes(path);
+                self.state.status.set_info("Updated repository with current mods");
             },
             Err(_) => {
-                let new_mods = scanner::scan_directory(path);
-                scanner::update_mods_list(&mut self.state.repo, new_mods);
+                // New repository, use found mods directly
+                scanner::update_mods_list(&mut self.state.repo, found_mods);
                 self.state.status.set_info(format!("Found {} mods", self.state.repo.required_mods.len()));
             }
         }
 
         self.state.last_scanned_path = Some(path.clone());
-    }
-
-    fn scan_for_changes(&mut self, path: &PathBuf) {
-        let new_mods = scanner::scan_directory(path);
-        if scanner::check_for_changes(&self.state.repo.required_mods, &new_mods) {
-            self.state.pending_mods = Some(new_mods);
-            self.state.show_update_prompt = true;
-            self.state.status.set_info("Found changes in mods. Choose whether to update.");
-        }
     }
 
     pub fn get_current_path(&self) -> PathBuf {
