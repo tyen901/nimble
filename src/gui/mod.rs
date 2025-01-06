@@ -5,7 +5,7 @@ pub mod config;
 
 use eframe::egui;
 use egui::ViewportBuilder;
-use crate::gui::panels::{create_repo::CreateRepoPanel, server_panel::ServerPanel};
+use crate::gui::panels::{create_repo::CreateRepoPanel, server::ServerPanel};
 use crate::gui::panels::gen_srf::GenSrfPanel;
 use crate::gui::state::{GuiState, GuiConfig, CommandMessage, CommandChannels};
 
