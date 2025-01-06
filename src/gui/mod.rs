@@ -160,27 +160,5 @@ impl eframe::App for NimbleGui {
                 }
             }
         });
-
-        egui::TopBottomPanel::bottom("footer").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                match &self.state {
-                    GuiState::Idle => {
-                        ui.label("Ready");
-                    },
-                    GuiState::Connecting => {
-                        ui.label("Connecting...");
-                    },
-                    GuiState::GeneratingSRF { progress, .. } => {
-                        ui.label("Generating SRF...");
-                        ui.add(egui::ProgressBar::new(*progress));
-                    },
-                    GuiState::Launching => {
-                        ui.label("Launching...");
-                    },
-                    // Remove sync and scanning states from footer since they're shown in the main panel
-                    _ => {}
-                }
-            });
-        });
     }
 }
