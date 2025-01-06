@@ -3,6 +3,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use snafu::prelude::*;
 use std::{fmt::Display, net::IpAddr, str::FromStr};
 use ureq::Agent;
+use md5::Digest;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -94,6 +95,28 @@ impl Repository {
             },
             Err(e) => Err(format!("Failed to connect to repository: {}", e)),
         }
+    }
+
+    pub fn compute_checksum(&mut self) {
+        let mut hasher = md5::Md5::new();
+        
+        // Hash all required mods
+        for mod_entry in &self.required_mods {
+            hasher.update(mod_entry.mod_name.as_bytes());
+            hasher.update(mod_entry.checksum.to_string().as_bytes());
+        }
+
+        // Hash all optional mods
+        for mod_entry in &self.optional_mods {
+            hasher.update(mod_entry.mod_name.as_bytes());
+            hasher.update(mod_entry.checksum.to_string().as_bytes());
+        }
+
+        // Hash version and parameters
+        hasher.update(self.version.as_bytes());
+        hasher.update(self.client_parameters.as_bytes());
+
+        self.checksum = hex::encode_upper(hasher.finalize());
     }
 }
 

@@ -59,3 +59,9 @@ impl Debug for Md5Digest {
             .finish()
     }
 }
+
+impl std::fmt::Display for Md5Digest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", hex::encode_upper(self.inner))
+    }
+}
