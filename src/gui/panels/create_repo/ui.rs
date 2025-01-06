@@ -7,16 +7,24 @@ pub fn render_panel(ui: &mut egui::Ui, state: &mut CreateRepoPanelState) {
     ui.add_space(8.0);
 
     render_repository_setup(ui, state);
-    ui.add_space(8.0);
-
-    render_main_settings(ui, state);
-    render_servers_config(ui, &mut state.repo);
-    render_save_button(ui, state);
+    
+    // Only show the rest of the UI if a valid path is selected and scanned
+    if state.last_scanned_path.is_some() {
+        ui.add_space(8.0);
+        render_main_settings(ui, state);
+        render_servers_config(ui, &mut state.repo);
+        render_save_button(ui, state);
+    }
 }
 
 fn render_repository_setup(ui: &mut egui::Ui, state: &mut CreateRepoPanelState) {
     ui.heading("Repository Setup");
     state.base_path.show(ui);
+    
+    // Show a hint if no path is selected yet
+    if state.last_scanned_path.is_none() {
+        ui.label("Select a folder to begin creating or editing a repository");
+    }
 }
 
 fn render_main_settings(ui: &mut egui::Ui, state: &mut CreateRepoPanelState) {
@@ -52,7 +60,6 @@ fn render_basic_settings(ui: &mut egui::Ui, state: &mut CreateRepoPanelState) {
 fn render_options(ui: &mut egui::Ui, state: &mut CreateRepoPanelState) {
     ui.group(|ui| {
         ui.heading("Options");
-        ui.checkbox(&mut state.generate_srf, "Generate SRF files");
         ui.checkbox(&mut state.auto_increment_version, "Auto-increment version");
     });
 }
@@ -110,17 +117,18 @@ fn render_mods_list(ui: &mut egui::Ui, mods: &[Mod]) {
 fn render_servers_config(ui: &mut egui::Ui, repo: &mut Repository) {
     ui.group(|ui| {
         ui.heading("Servers");
-        for server in &mut repo.servers {
-            render_server_entry(ui, server);
-        }
-        if ui.button("Add Server").clicked() {
-            repo.servers.push(Server {
-                name: String::new(),
-                address: "127.0.0.1".parse().unwrap(),
-                port: 2302,
-                password: String::new(),
-                battle_eye: true,
-            });
+        if repo.servers.is_empty() {
+            if ui.button("Add Server").clicked() {
+                repo.servers.push(Server {
+                    name: String::new(),
+                    address: "127.0.0.1".parse().unwrap(),
+                    port: 2302,
+                    password: String::new(),
+                    battle_eye: true,
+                });
+            }
+        } else {
+            render_server_entry(ui, &mut repo.servers[0]);
         }
     });
 }
@@ -137,6 +145,8 @@ fn render_server_entry(ui: &mut egui::Ui, server: &mut Server) {
         }
         ui.label("Port:");
         ui.add(egui::DragValue::new(&mut server.port).speed(1));
+        ui.label("Password:");
+        ui.text_edit_singleline(&mut server.password);
         ui.checkbox(&mut server.battle_eye, "BattlEye");
     });
 }
@@ -145,11 +155,11 @@ fn render_save_button(ui: &mut egui::Ui, state: &mut CreateRepoPanelState) {
     ui.separator();
     ui.add_space(8.0);
     ui.horizontal(|ui| {
-        if ui.button("Save repo.json").clicked() {
+        if ui.button("Save Repository").clicked() {
             let path = state.base_path.path();
             if path.exists() {
-                match super::actions::save_repository(&path, &mut state.repo, state.generate_srf) {
-                    Ok(_) => state.status.set_info("Saved repo.json successfully"),
+                match super::actions::save_repository(&path, &mut state.repo) {
+                    Ok(_) => state.status.set_info("Saved repository successfully"),
                     Err(e) => state.status.set_error(format!("Failed to save: {}", e)),
                 }
             }
