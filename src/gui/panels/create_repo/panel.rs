@@ -41,6 +41,18 @@ impl CreateRepoPanel {
             return;
         }
 
+        // Auto-clean if enabled
+        if self.state.clean_options.auto_clean {
+            if let Err(e) = super::actions::clean_directory(
+                path,
+                self.state.clean_options.force_lowercase,
+                &self.state.clean_options.file_filters,
+            ) {
+                self.state.status.set_error(format!("Auto-clean failed: {}", e));
+                return;
+            }
+        }
+
         match scanner::load_existing_repo(path) {
             Ok(loaded_repo) => {
                 self.state.repo = loaded_repo;
@@ -49,7 +61,7 @@ impl CreateRepoPanel {
             },
             Err(_) => {
                 let new_mods = scanner::scan_directory(path);
-                scanner::update_mods_list(&mut self.state.repo, new_mods, self.state.auto_increment_version);
+                scanner::update_mods_list(&mut self.state.repo, new_mods);
                 self.state.status.set_info(format!("Found {} mods", self.state.repo.required_mods.len()));
             }
         }

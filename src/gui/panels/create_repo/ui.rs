@@ -3,18 +3,22 @@ use crate::repository::{Repository, Server, Mod};
 use super::state::CreateRepoPanelState;
 
 pub fn render_panel(ui: &mut egui::Ui, state: &mut CreateRepoPanelState) {
-    state.status.show(ui);
-    ui.add_space(8.0);
+    egui::ScrollArea::vertical()
+        .show(ui, |ui| {
+            state.status.show(ui);
+            ui.add_space(8.0);
 
-    render_repository_setup(ui, state);
-    
-    // Only show the rest of the UI if a valid path is selected and scanned
-    if state.last_scanned_path.is_some() {
-        ui.add_space(8.0);
-        render_main_settings(ui, state);
-        render_servers_config(ui, &mut state.repo);
-        render_save_button(ui, state);
-    }
+            render_repository_setup(ui, state);
+            
+            if state.last_scanned_path.is_some() {
+                ui.add_space(8.0);
+                render_main_settings(ui, state);
+                render_servers_config(ui, &mut state.repo);
+                ui.separator();
+                render_options(ui, state);
+                render_save_button(ui, state);
+            }
+        });
 }
 
 fn render_repository_setup(ui: &mut egui::Ui, state: &mut CreateRepoPanelState) {
@@ -28,19 +32,16 @@ fn render_repository_setup(ui: &mut egui::Ui, state: &mut CreateRepoPanelState) 
 }
 
 fn render_main_settings(ui: &mut egui::Ui, state: &mut CreateRepoPanelState) {
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            render_basic_settings(ui, state);
-            render_options(ui, state);
-        });
-        ui.vertical(|ui| {
-            render_mods_section(ui, state);
-        });
+    ui.vertical(|ui| {
+        render_basic_settings(ui, state);
+        ui.add_space(8.0);
+        render_mods_section(ui, state);
     });
 }
 
 fn render_basic_settings(ui: &mut egui::Ui, state: &mut CreateRepoPanelState) {
     ui.group(|ui| {
+        ui.set_min_width(400.0);
         ui.heading("Basic Settings");
         ui.horizontal(|ui| {
             ui.label("Repository Name:");
@@ -52,21 +53,59 @@ fn render_basic_settings(ui: &mut egui::Ui, state: &mut CreateRepoPanelState) {
         });
         ui.horizontal(|ui| {
             ui.label("Version:");
-            ui.text_edit_singleline(&mut state.repo.version);
+            ui.label(&state.repo.version);  // Changed to display-only label
         });
     });
 }
 
 fn render_options(ui: &mut egui::Ui, state: &mut CreateRepoPanelState) {
-    ui.group(|ui| {
-        ui.heading("Options");
-        ui.checkbox(&mut state.auto_increment_version, "Auto-increment version");
+    ui.collapsing("Options", |ui| {
+        ui.collapsing("Cleaning Options", |ui| {
+            ui.checkbox(&mut state.clean_options.auto_clean, "Auto-clean directory");
+            
+            if state.clean_options.auto_clean {
+                ui.indent("clean_options", |ui| {
+                    ui.checkbox(&mut state.clean_options.force_lowercase, "Force lowercase filenames");
+                    
+                    // File filter section
+                    ui.group(|ui| {
+                        ui.label("File Filters:");
+                        ui.horizontal(|ui| {
+                            let text_edit = ui.text_edit_singleline(&mut state.clean_options.new_filter);
+                            let add_filter = !state.clean_options.new_filter.is_empty() && 
+                                (text_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) || 
+                                ui.button("+").clicked());
+                            
+                            if add_filter {
+                                state.clean_options.file_filters.push(state.clean_options.new_filter.clone());
+                                state.clean_options.new_filter.clear();
+                            }
+                        });
+                        
+                        ui.separator();
+                        
+                        egui::ScrollArea::vertical()
+                            .max_height(100.0)
+                            .show(ui, |ui| {
+                                for filter_idx in (0..state.clean_options.file_filters.len()).collect::<Vec<_>>() {
+                                    ui.horizontal(|ui| {
+                                        ui.label(&state.clean_options.file_filters[filter_idx]);
+                                        if ui.small_button("✖").clicked() {
+                                            state.clean_options.file_filters.remove(filter_idx);
+                                        }
+                                    });
+                                }
+                            });
+                    });
+                });
+            }
+        });
     });
 }
 
 fn render_mods_section(ui: &mut egui::Ui, state: &mut CreateRepoPanelState) {
-    ui.group(|ui| {
-        ui.heading("Required Mods");
+    ui.collapsing("Required Mods", |ui| {
+        ui.set_min_width(400.0);
         
         if state.show_update_prompt {
             render_update_prompt(ui, state);
@@ -74,7 +113,7 @@ fn render_mods_section(ui: &mut egui::Ui, state: &mut CreateRepoPanelState) {
         }
 
         egui::ScrollArea::vertical()
-            .max_height(200.0)
+            .max_height(300.0)
             .show(ui, |ui| {
                 render_mods_list(ui, &state.repo.required_mods);
             });
@@ -100,7 +139,7 @@ fn render_update_prompt(ui: &mut egui::Ui, state: &mut CreateRepoPanelState) {
 }
 
 fn render_mods_list(ui: &mut egui::Ui, mods: &[Mod]) {
-    if !mods.is_empty() {
+    if (!mods.is_empty()) {
         for mod_entry in mods {
             ui.horizontal(|ui| {
                 ui.label(&mod_entry.mod_name);
@@ -134,25 +173,36 @@ fn render_servers_config(ui: &mut egui::Ui, repo: &mut Repository) {
 }
 
 fn render_server_entry(ui: &mut egui::Ui, server: &mut Server) {
-    ui.horizontal(|ui| {
-        ui.label("Name:");
-        ui.text_edit_singleline(&mut server.name);
-        ui.label("Address:");
-        if ui.button(server.address.to_string()).clicked() {
-            if let Ok(new_addr) = "127.0.0.1".parse() {
-                server.address = new_addr;
+    ui.vertical(|ui| {
+        ui.horizontal(|ui| {
+            ui.label("Name:");
+            ui.text_edit_singleline(&mut server.name);
+        });
+        ui.horizontal(|ui| {
+            ui.label("Address:");
+            let mut addr_str = server.address.to_string();
+            if ui.text_edit_singleline(&mut addr_str).changed() {
+                if let Ok(new_addr) = addr_str.parse() {
+                    server.address = new_addr;
+                }
             }
-        }
-        ui.label("Port:");
-        ui.add(egui::DragValue::new(&mut server.port).speed(1));
-        ui.label("Password:");
-        ui.text_edit_singleline(&mut server.password);
+        });
+        ui.horizontal(|ui| {
+            ui.label("Port:");
+            ui.add(egui::DragValue::new(&mut server.port)
+                .clamp_range(1024..=65535)
+                .speed(1)
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.label("Password:");
+            ui.text_edit_singleline(&mut server.password);
+        });
         ui.checkbox(&mut server.battle_eye, "BattlEye");
     });
 }
 
 fn render_save_button(ui: &mut egui::Ui, state: &mut CreateRepoPanelState) {
-    ui.separator();
     ui.add_space(8.0);
     ui.horizontal(|ui| {
         if ui.button("Save Repository").clicked() {

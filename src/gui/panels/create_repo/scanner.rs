@@ -30,15 +30,8 @@ pub fn load_existing_repo(path: &Path) -> Result<Repository, String> {
         })
 }
 
-pub fn update_mods_list(repo: &mut Repository, new_mods: Vec<Mod>, auto_increment: bool) {
+pub fn update_mods_list(repo: &mut Repository, new_mods: Vec<Mod>) {  // Removed auto_increment parameter
     repo.required_mods = new_mods;
-    
-    if auto_increment {
-        if let Ok(mut version) = Version::parse(&repo.version) {
-            version.patch += 1;
-            repo.version = version.to_string();
-        }
-    }
 }
 
 pub fn save_repo(path: &Path, repo: &Repository) -> Result<(), String> {

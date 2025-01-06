@@ -68,7 +68,7 @@ pub struct Server {
 #[serde(rename_all = "camelCase")] // this particular file is camelcase for reasons
 pub struct Repository {
     pub repo_name: String,
-    pub checksum: String,
+    pub checksum: Md5Digest,
     pub required_mods: Vec<Mod>,
     pub optional_mods: Vec<Mod>,
     pub client_parameters: String,
@@ -116,7 +116,24 @@ impl Repository {
         hasher.update(self.version.as_bytes());
         hasher.update(self.client_parameters.as_bytes());
 
-        self.checksum = hex::encode_upper(hasher.finalize());
+        let final_hash = format!("{:X}", hasher.finalize());
+        self.checksum = Md5Digest::new(&final_hash)
+            .expect("Failed to create checksum from valid hex string");
+    }
+}
+
+impl Default for Repository {
+    fn default() -> Self {
+        Self {
+            repo_name: String::new(),
+            checksum: Md5Digest::default(),  // Changed to use Md5Digest default
+            version: "1.0.0".to_string(),
+            client_parameters: "-noPause -noSplash -skipIntro".to_string(),
+            repo_basic_authentication: None,
+            required_mods: Vec::new(),
+            optional_mods: Vec::new(),
+            servers: Vec::new(),
+        }
     }
 }
 
@@ -138,7 +155,7 @@ mod tests {
         fn create_test_repository() -> Self {
             Repository {
                 repo_name: "Test Repository".to_string(),
-                checksum: "DUMMY_HASH".to_string(),
+                checksum: Md5Digest::default(),  // Changed to use Md5Digest default
                 required_mods: vec![
                     Mod {
                         mod_name: "@test_mod1".to_string(),
