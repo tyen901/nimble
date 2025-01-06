@@ -5,7 +5,7 @@ pub mod config;
 
 use eframe::egui;
 use egui::ViewportBuilder;
-use crate::gui::panels::{server_panel::ServerPanel, gen_srf_panel::GenSrfPanel};
+use crate::gui::panels::{server_panel::ServerPanel, gen_srf_panel::GenSrfPanel, create_repo_panel::CreateRepoPanel};
 use crate::gui::state::{GuiState, GuiConfig, CommandMessage, CommandChannels};
 
 #[derive(Default)]
@@ -14,6 +14,7 @@ pub struct NimbleGui {
     state: GuiState,
     server_panel: ServerPanel,
     gen_srf_panel: GenSrfPanel,
+    create_repo_panel: CreateRepoPanel,
     channels: CommandChannels,
     selected_tab: Tab,
 }
@@ -23,6 +24,7 @@ pub enum Tab {
     #[default]
     Server,
     GenSrf,
+    CreateRepo,
 }
 
 impl NimbleGui {
@@ -31,10 +33,11 @@ impl NimbleGui {
         let server_panel = ServerPanel::from_config(&config);
         
         Self {
-            config,
+            config: config.clone(),
             server_panel,
             state: GuiState::default(),
             gen_srf_panel: GenSrfPanel::default(),
+            create_repo_panel: CreateRepoPanel::from_config(&config),
             channels: CommandChannels::default(),
             selected_tab: Tab::default(),
         }
@@ -46,6 +49,10 @@ impl eframe::App for NimbleGui {
         // Update config from panels before saving
         self.config.repo_url = self.server_panel.repo_url().to_string();
         self.config.base_path = self.server_panel.base_path();
+        
+        // Use new accessor method instead of direct field access
+        let path = self.create_repo_panel.get_current_path();
+        self.config.set_last_repo_path(Some(path));
         
         if let Err(e) = self.config.save() {
             eprintln!("Failed to save config: {}", e);
@@ -62,6 +69,7 @@ impl eframe::App for NimbleGui {
                 ui.separator();
                 ui.selectable_value(&mut self.selected_tab, Tab::Server, "Server");
                 ui.selectable_value(&mut self.selected_tab, Tab::GenSrf, "Generate SRF");
+                ui.selectable_value(&mut self.selected_tab, Tab::CreateRepo, "Create Repo");
             });
         });
 
@@ -69,6 +77,7 @@ impl eframe::App for NimbleGui {
             match self.selected_tab {
                 Tab::Server => self.server_panel.show(ui, &self.state, Some(&self.channels.sender)),
                 Tab::GenSrf => self.gen_srf_panel.show(ui, Some(&self.channels.sender), &self.state),
+                Tab::CreateRepo => self.create_repo_panel.show(ui),
             }
             
             while let Ok(msg) = self.channels.receiver.try_recv() {

@@ -1,0 +1,33 @@
+{
+    "repoName": "REPO NAME",
+    "checksum": "HASH",
+    "requiredMods": [
+        {
+            "modName": "@addon1",
+            "checkSum": "HASH",
+            "enabled": true
+        },
+        {
+            "modName": "@addon2",
+            "checkSum": "HASH",
+            "enabled": true
+        }
+    ],
+    "optionalMods": [],
+    "iconImagePath": "icon.png",
+    "iconImageChecksum": "HASH",
+    "repoImagePath": "repo.png",
+    "repoImageChecksum": "HASH",
+    "requiredDLCS": [],
+    "clientParameters": "-noPause -noSplash -skipIntro",
+    "version": "3.2.0.0",
+    "servers": [
+        {
+            "name": "SERVER NAME",
+            "address": "127.0.0.1",
+            "port": "2302",
+            "password": "password",
+            "battleEye": false
+        }
+    ]
+}

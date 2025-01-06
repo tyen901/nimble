@@ -74,6 +74,7 @@ pub struct GuiConfig {
     pub base_path: PathBuf,
     #[serde(default = "default_window_size")]
     window_size: (f32, f32),
+    pub last_repo_path: Option<PathBuf>,
 }
 
 fn default_version() -> u32 {
@@ -91,6 +92,7 @@ impl Default for GuiConfig {
             repo_url: String::new(),
             base_path: PathBuf::new(),
             window_size: default_window_size(),
+            last_repo_path: None,
         }
     }
 }
@@ -135,5 +137,13 @@ impl GuiConfig {
 
     pub fn set_window_size(&mut self, size: egui::Vec2) {
         self.window_size = (size.x, size.y);
+    }
+
+    pub fn set_last_repo_path(&mut self, path: Option<PathBuf>) {
+        self.last_repo_path = path;
+    }
+
+    pub fn last_repo_path(&self) -> Option<&PathBuf> {
+        self.last_repo_path.as_ref()
     }
 }

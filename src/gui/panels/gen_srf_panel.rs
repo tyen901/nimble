@@ -28,8 +28,11 @@ impl GenSrfPanel {
     pub fn show(&mut self, ui: &mut egui::Ui, sender: Option<&Sender<CommandMessage>>, state: &GuiState) {
         self.status.show(ui);
 
+        ui.label("Select mod folder containing @mod directories:");
         self.input_path.show(ui);
         ui.add_space(4.0);
+        
+        ui.label("Select output folder for generated SRF files (optional):");
         self.output_path.show(ui);
         ui.add_space(8.0);
 
@@ -72,6 +75,9 @@ impl GenSrfPanel {
     fn validate(path: &PathBuf) -> Result<(), String> {
         if path.as_os_str().is_empty() {
             return Err("Input path is required".into());
+        }
+        if !path.exists() {
+            return Err("Input path does not exist".into());
         }
         Ok(())
     }
