@@ -9,7 +9,7 @@ pub struct CreateRepoPanelState {
     pub base_path: PathPicker,
     pub status: StatusDisplay,
     pub last_scanned_path: Option<PathBuf>,
-    pub show_update_prompt: bool,  // Removed auto_increment_version
+    pub show_update_prompt: bool,
     pub pending_mods: Option<Vec<Mod>>,
     pub config: Option<GuiConfig>,
     pub clean_options: CleanOptions,
