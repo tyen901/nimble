@@ -38,7 +38,7 @@ pub fn save_repo(path: &Path, repo: &Repository) -> Result<(), String> {
     std::fs::File::create(path.join("repo.json"))
         .map_err(|e| format!("Failed to create repo.json: {}", e))
         .and_then(|file| {
-            serde_json::to_writer_pretty(file, repo)
+            serde_json::to_writer(file, repo)  // Removed _pretty to get minified output
                 .map_err(|e| format!("Failed to write repo.json: {}", e))
         })
 }
