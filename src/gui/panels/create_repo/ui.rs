@@ -3,21 +3,44 @@ use crate::repository::{Repository, Server, Mod};
 use super::state::CreateRepoPanelState;
 
 pub fn render_panel(ui: &mut egui::Ui, state: &mut CreateRepoPanelState) {
-    egui::ScrollArea::vertical()
-        .show(ui, |ui| {
-            state.status.show(ui);
-            ui.add_space(8.0);
+    let panel_width = ui.available_width().min(1000.0);
+    ui.set_min_width(panel_width);
 
-            render_repository_setup(ui, state);
-            
-            if state.last_scanned_path.is_some() {
-                ui.add_space(8.0);
-                render_main_settings(ui, state);
-                render_servers_config(ui, &mut state.repo);
-                ui.separator();
-                render_options(ui, state);
-                render_save_button(ui, state);
-            }
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.vertical(|ui| {
+                state.status.show(ui);
+                ui.add_space(16.0);
+                render_repository_setup(ui, state);
+                
+                if state.last_scanned_path.is_some() {
+                    ui.add_space(16.0);
+                    
+                    ui.horizontal(|ui| {
+                        // Left column
+                        ui.vertical(|ui| {
+                            ui.set_min_width(400.0);
+                            render_basic_settings(ui, state);
+                            ui.add_space(16.0);
+                            render_servers_config(ui, &mut state.repo);
+                            ui.add_space(16.0);
+                            render_options(ui, state);
+                        });
+
+                        ui.add_space(16.0);
+
+                        // Right column - mods list
+                        ui.vertical(|ui| {
+                            ui.set_min_width(300.0);
+                            render_mods_section(ui, state);
+                        });
+                    });
+
+                    ui.add_space(16.0);
+                    render_save_button(ui, state);
+                }
+            });
         });
 }
 
@@ -59,53 +82,30 @@ fn render_basic_settings(ui: &mut egui::Ui, state: &mut CreateRepoPanelState) {
 }
 
 fn render_options(ui: &mut egui::Ui, state: &mut CreateRepoPanelState) {
-    ui.collapsing("Options", |ui| {
-        ui.collapsing("Cleaning Options", |ui| {
-            ui.checkbox(&mut state.clean_options.auto_clean, "Auto-clean directory");
-            
-            if state.clean_options.auto_clean {
-                ui.indent("clean_options", |ui| {
-                    ui.checkbox(&mut state.clean_options.force_lowercase, "Force lowercase filenames");
-                    
-                    // File filter section
-                    ui.group(|ui| {
-                        ui.label("File Filters:");
-                        ui.horizontal(|ui| {
-                            let text_edit = ui.text_edit_singleline(&mut state.clean_options.new_filter);
-                            let add_filter = !state.clean_options.new_filter.is_empty() && 
-                                (text_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) || 
-                                ui.button("+").clicked());
-                            
-                            if add_filter {
-                                state.clean_options.file_filters.push(state.clean_options.new_filter.clone());
-                                state.clean_options.new_filter.clear();
-                            }
-                        });
-                        
-                        ui.separator();
-                        
-                        egui::ScrollArea::vertical()
-                            .max_height(100.0)
-                            .show(ui, |ui| {
-                                for filter_idx in (0..state.clean_options.file_filters.len()).collect::<Vec<_>>() {
-                                    ui.horizontal(|ui| {
-                                        ui.label(&state.clean_options.file_filters[filter_idx]);
-                                        if ui.small_button("✖").clicked() {
-                                            state.clean_options.file_filters.remove(filter_idx);
-                                        }
-                                    });
-                                }
-                            });
-                    });
-                });
-            }
-        });
+    ui.group(|ui| {
+        ui.set_min_width(400.0);
+        ui.heading("Cleanup Options");
+        ui.add_space(8.0);
+
+        ui.checkbox(&mut state.clean_options.force_lowercase, "Force lowercase filenames when saving");
+        ui.add_space(8.0);
+        ui.checkbox(&mut state.clean_options.cleanup_files, "Remove excluded files when saving");
+        
+        if state.clean_options.cleanup_files {
+            ui.add_space(8.0);
+            ui.group(|ui| {
+                ui.label("Excluded Files & Directories (separated by ;):");
+                ui.text_edit_multiline(&mut state.clean_options.excluded_files);
+            });
+        }
     });
 }
 
 fn render_mods_section(ui: &mut egui::Ui, state: &mut CreateRepoPanelState) {
-    ui.collapsing("Required Mods", |ui| {
-        ui.set_min_width(400.0);
+    ui.group(|ui| {
+        ui.set_min_width(300.0);
+        ui.heading("Required Mods");
+        ui.add_space(8.0);
         
         if state.show_update_prompt {
             render_update_prompt(ui, state);
@@ -113,11 +113,24 @@ fn render_mods_section(ui: &mut egui::Ui, state: &mut CreateRepoPanelState) {
         }
 
         egui::ScrollArea::vertical()
-            .max_height(300.0)
+            .max_height(500.0) // Increased height since we have more vertical space
+            .id_source("mods_list")
             .show(ui, |ui| {
                 render_mods_list(ui, &state.repo.required_mods);
             });
     });
+}
+
+fn render_mods_list(ui: &mut egui::Ui, mods: &[Mod]) {
+    if !mods.is_empty() {
+        ui.vertical(|ui| {
+            for mod_entry in mods {
+                ui.add(egui::Label::new(&mod_entry.mod_name));
+            }
+        });
+    } else {
+        ui.label("No mods found");
+    }
 }
 
 fn render_update_prompt(ui: &mut egui::Ui, state: &mut CreateRepoPanelState) {
@@ -136,21 +149,6 @@ fn render_update_prompt(ui: &mut egui::Ui, state: &mut CreateRepoPanelState) {
             state.status.set_info("Kept existing mod list");
         }
     });
-}
-
-fn render_mods_list(ui: &mut egui::Ui, mods: &[Mod]) {
-    if (!mods.is_empty()) {
-        for mod_entry in mods {
-            ui.horizontal(|ui| {
-                ui.label(&mod_entry.mod_name);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(if mod_entry.enabled { "✓" } else { "✗" });
-                });
-            });
-        }
-    } else {
-        ui.label("No mods found");
-    }
 }
 
 fn render_servers_config(ui: &mut egui::Ui, repo: &mut Repository) {
@@ -204,15 +202,35 @@ fn render_server_entry(ui: &mut egui::Ui, server: &mut Server) {
 
 fn render_save_button(ui: &mut egui::Ui, state: &mut CreateRepoPanelState) {
     ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        if ui.button("Save Repository").clicked() {
-            let path = state.base_path.path();
-            if path.exists() {
-                match super::actions::save_repository(&path, &mut state.repo) {
-                    Ok(_) => state.status.set_info("Saved repository successfully"),
-                    Err(e) => state.status.set_error(format!("Failed to save: {}", e)),
+    
+    let button = egui::Button::new("Save Repository")
+        .fill(egui::Color32::from_rgb(100, 200, 100));
+    
+    if ui.add_sized(ui.available_size_before_wrap(), button).clicked() {
+        let path = state.base_path.path();
+        if path.exists() {
+            // Only clean files if the cleanup option is enabled
+            if state.clean_options.cleanup_files {
+                if let Err(e) = super::actions::clean_directory(
+                    &path,
+                    state.clean_options.force_lowercase,
+                    &state.clean_options.excluded_files,
+                ) {
+                    state.status.set_error(format!("Cleanup failed: {}", e));
+                    return;
+                }
+            } else if state.clean_options.force_lowercase {
+                // If only lowercase is enabled, just do that
+                if let Err(e) = super::actions::rename_to_lowercase(&path) {
+                    state.status.set_error(format!("Lowercase conversion failed: {}", e));
+                    return;
                 }
             }
+            
+            match super::actions::save_repository(&path, &mut state.repo) {
+                Ok(_) => state.status.set_info("Saved repository successfully"),
+                Err(e) => state.status.set_error(format!("Failed to save: {}", e)),
+            }
         }
-    });
+    }
 }

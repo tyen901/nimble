@@ -17,9 +17,8 @@ pub struct CreateRepoPanelState {
 
 pub struct CleanOptions {
     pub force_lowercase: bool,
-    pub file_filters: Vec<String>,
-    pub new_filter: String,
-    pub auto_clean: bool,
+    pub excluded_files: String,
+    pub cleanup_files: bool,  // renamed from cleanup_enabled
 }
 
 impl Default for CreateRepoPanelState {
@@ -43,17 +42,8 @@ impl Default for CreateRepoPanelState {
             config: None,
             clean_options: CleanOptions {
                 force_lowercase: true,
-                file_filters: vec![
-                    ".git".to_string(),
-                    ".gitignore".to_string(),
-                    ".gitattributes".to_string(),
-                    ".gitmodules".to_string(),
-                    ".DS_Store".to_string(),
-                    "Thumbs.db".to_string(),
-                    "desktop.ini".to_string(),
-                ],
-                new_filter: String::new(),
-                auto_clean: true,
+                excluded_files: ".git;.gitignore;.gitattributes;.gitmodules;.DS_Store;Thumbs.db;desktop.ini".to_string(),
+                cleanup_files: true,
             },
         }
     }

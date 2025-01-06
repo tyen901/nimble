@@ -39,8 +39,9 @@ pub fn save_repository(path: &Path, repo: &mut Repository) -> Result<(), String>
     super::scanner::save_repo(path, repo)
 }
 
-pub fn clean_directory(path: &Path, force_lowercase: bool, filters: &[String]) -> Result<(), String> {
-    remove_filtered_files(path, filters)?;
+pub fn clean_directory(path: &Path, force_lowercase: bool, filters: &str) -> Result<(), String> {
+    let filters: Vec<&str> = filters.split(';').collect();
+    remove_filtered_files(path, &filters)?;
     
     if force_lowercase {
         rename_to_lowercase(path)?;
@@ -49,7 +50,7 @@ pub fn clean_directory(path: &Path, force_lowercase: bool, filters: &[String]) -
     Ok(())
 }
 
-fn remove_filtered_files(path: &Path, filters: &[String]) -> Result<(), String> {
+fn remove_filtered_files(path: &Path, filters: &[&str]) -> Result<(), String> {
     for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
         let path = entry.path();
         let name = path.file_name()
@@ -71,7 +72,7 @@ fn remove_filtered_files(path: &Path, filters: &[String]) -> Result<(), String> 
 
 // Remove remove_git_files function as it's no longer needed
 
-fn rename_to_lowercase(path: &Path) -> Result<(), String> {
+pub fn rename_to_lowercase(path: &Path) -> Result<(), String> {
     let mut rename_ops: Vec<(PathBuf, PathBuf)> = Vec::new();
     
     for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
