@@ -7,16 +7,16 @@ use std::sync::mpsc::Sender;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-pub struct RepositoryView {
+pub struct ServerState {
     pub path_picker: PathPicker,
     repository: Option<Repository>,
-    repo_url: String,
+    pub repo_url: String,
     pub status: StatusDisplay,
     sync_cancel: Arc<AtomicBool>,
     scan_results: Option<Vec<crate::commands::scan::ModUpdate>>,
 }
 
-impl Default for RepositoryView {
+impl Default for ServerState {
     fn default() -> Self {
         Self {
             path_picker: PathPicker::new("Base Path:", "Select Mods Directory"),
@@ -29,10 +29,37 @@ impl Default for RepositoryView {
     }
 }
 
-impl CommandHandler for RepositoryView {}
+impl CommandHandler for ServerState {}
 
-impl RepositoryView {
+impl ServerState {
     pub fn show(&mut self, ui: &mut egui::Ui, sender: Option<&Sender<CommandMessage>>, state: &GuiState) {
+        self.status.show(ui);
+
+        if self.repository.is_none() {
+            // Show connection UI when no repository
+            if matches!(state, GuiState::Connecting) {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Connecting to server...");
+                });
+                return;
+            }
+
+            ui.horizontal(|ui| {
+                ui.label("Repository URL:");
+                ui.text_edit_singleline(&mut self.repo_url);
+            });
+
+            if ui.button("Connect").clicked() && sender.is_some() {
+                let repo_url = self.repo_url.clone();
+                let sender = sender.unwrap().clone();
+                sender.send(CommandMessage::ConnectionStarted).ok();
+                crate::gui::panels::server::server_actions::connect_to_server(&repo_url, sender);
+            }
+            return;
+        }
+
+        // Show repository UI when connected
         let repo_data = self.repository.as_ref().map(|repo| {
             (
                 repo.repo_name.clone(),
