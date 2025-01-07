@@ -23,6 +23,7 @@ pub enum CommandMessage {
     LaunchError(String),
     Disconnect,
     ScanningStatus(String),
+    ScanStarted,
 }
 
 pub struct CommandChannels {

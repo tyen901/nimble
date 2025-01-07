@@ -157,6 +157,9 @@ impl eframe::App for NimbleGui {
                         self.state = GuiState::Scanning { message };
                         ctx.request_repaint();
                     }
+                    CommandMessage::ScanStarted => {
+                        self.state = GuiState::Scanning { message: "Scanning local folder...".into() };
+                    }
                 }
             }
         });

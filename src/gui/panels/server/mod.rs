@@ -82,6 +82,11 @@ impl ServerPanel {
             CommandMessage::Disconnect => {
                 self.repository_view = RepositoryView::default();
             }
+            CommandMessage::ScanStarted => {
+                // Handle scan started command
+                self.repository_view.status.set_info("Scanning local folder...");
+                // Implement the scanning logic here
+            }
             _ => {}
         }
     }

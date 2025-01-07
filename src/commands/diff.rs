@@ -36,7 +36,8 @@ pub fn diff_repo<'a>(
 ) -> Vec<&'a repository::Mod> {
     let mut downloads = Vec::new();
 
-    for r#mod in &remote_repo.required_mods {
+    // Include both required_mods and optional_mods
+    for r#mod in remote_repo.required_mods.iter().chain(remote_repo.optional_mods.iter()) {
         if !mod_cache.mods.contains_key(&r#mod.checksum) {
             downloads.push(r#mod);
         }
