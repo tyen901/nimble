@@ -42,6 +42,8 @@ pub enum Error {
     LegacySrfU32ParseFailure { source: std::num::ParseIntError },
     #[snafu(display("failed to decode md5 digest: {}", source))]
     DigestParse { source: crate::md5_digest::Error },
+    #[snafu(display("Path stripping failed: {}", source))]
+    StripPrefix { source: std::path::StripPrefixError },
 }
 
 impl FileType {
@@ -110,14 +112,14 @@ pub fn scan_pbo(path: &Path, base_path: &Path) -> Result<File, Error> {
 
     let mut parts = Vec::new();
     let pbo = crate::pbo::Pbo::read(&mut file).context(PboSnafu)?;
-    let mut offset = 0;
+    let mut offset = 0u64;
 
     let length = pbo.input.seek(SeekFrom::End(0)).context(IoSnafu)?;
     pbo.input.seek(SeekFrom::Start(0)).context(IoSnafu)?;
 
     {
         let header_hash = generate_hash(pbo.input, pbo.header_len)?;
-        offset += pbo.header_len;
+        offset = offset.saturating_add(pbo.header_len);
 
         parts.push(Part {
             path: "$$HEADER$$".to_string(),
@@ -130,28 +132,35 @@ pub fn scan_pbo(path: &Path, base_path: &Path) -> Result<File, Error> {
     // swifty, as always, does very strange things
     for entry in pbo.entries.iter().skip(1) {
         let hash = generate_hash(pbo.input, u64::from(entry.data_size))?;
+        let entry_length = u64::from(entry.data_size);
 
         parts.push(Part {
             path: entry.filename.clone(),
-            length: u64::from(entry.data_size),
+            length: entry_length,
             checksum: hash,
             start: offset,
         });
 
-        offset += u64::from(entry.data_size);
+        offset = offset.saturating_add(entry_length);
     }
 
     {
-        // TODO: this once panicked due to underflow.
-        let remaining_len = length - offset;
+        // Calculate remaining length safely
+        let remaining_len = if offset <= length {
+            length - offset
+        } else {
+            0
+        };
 
-        let end_hash = generate_hash(pbo.input, remaining_len)?;
-        parts.push(Part {
-            path: "$$END$$".to_string(),
-            length: remaining_len,
-            checksum: end_hash,
-            start: offset,
-        });
+        if remaining_len > 0 {
+            let end_hash = generate_hash(pbo.input, remaining_len)?;
+            parts.push(Part {
+                path: "$$END$$".to_string(),
+                length: remaining_len,
+                checksum: end_hash,
+                start: offset,
+            });
+        }
     }
 
     let checksum = {
@@ -164,7 +173,12 @@ pub fn scan_pbo(path: &Path, base_path: &Path) -> Result<File, Error> {
         format!("{:X}", hasher.finalize())
     };
 
-    let path = RelativePathBuf::from_path(path.strip_prefix(base_path).unwrap()).unwrap();
+    let path = RelativePathBuf::from_path(
+        path.strip_prefix(base_path)
+            .context(StripPrefixSnafu)?
+            .to_str()
+            .unwrap_or("")
+    ).unwrap();
 
     Ok(File {
         r#type: FileType::Pbo,
@@ -218,7 +232,12 @@ pub fn scan_file(path: &Path, base_path: &Path) -> Result<File, Error> {
         hasher.update(&part.checksum);
     }
 
-    let path = RelativePathBuf::from_path(path.strip_prefix(base_path).unwrap()).unwrap();
+    let path = RelativePathBuf::from_path(
+        path.strip_prefix(base_path)
+            .context(StripPrefixSnafu)?
+            .to_str()
+            .unwrap_or("")
+    ).unwrap();
 
     Ok(File {
         checksum: format!("{:X}", hasher.finalize()),
