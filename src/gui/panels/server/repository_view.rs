@@ -180,9 +180,8 @@ impl RepositoryView {
             if let Some(sender) = sender {
                 sender.send(CommandMessage::LaunchStarted).ok();
                 let sender_clone = sender.clone();
-                let client_parameters = self.repository.as_ref().map_or("", |repo| &repo.client_parameters).to_string();
                 std::thread::spawn(move || {
-                    if let Err(e) = crate::commands::launch::launch(&base_path, &client_parameters) {
+                    if let Err(e) = crate::commands::launch::launch(&base_path) {
                         sender_clone.send(CommandMessage::LaunchError(e.to_string())).ok();
                     } else {
                         sender_clone.send(CommandMessage::LaunchComplete).ok();
