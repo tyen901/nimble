@@ -79,12 +79,11 @@ pub struct Repository {
 
 impl Repository {
     pub fn new(url: &str, agent: &mut ureq::Agent) -> Result<Self, Error> {
-        let repo_json_url = format!("{}/repo.json", url.trim_end_matches('/'));
-        get_repository_info(agent, &repo_json_url)
+        get_repository_info(agent, url)
     }
 
     pub fn validate_connection(agent: &mut Agent, repo_url: &str) -> Result<(), String> {
-        let repo_json_url = format!("{}/repo.json", repo_url.trim_end_matches('/'));
+        let repo_json_url = make_repo_json_url(repo_url);
         
         match agent.get(&repo_json_url).call() {
             Ok(response) => {
@@ -137,9 +136,25 @@ impl Default for Repository {
     }
 }
 
+pub fn normalize_repo_url(url: &str) -> String {
+    url.trim_end_matches('/').to_string() + "/"
+}
+
+pub fn make_repo_file_url(base_url: &str, file_path: &str) -> String {
+    format!("{}{}",
+        normalize_repo_url(base_url),
+        file_path.trim_start_matches('/')
+    )
+}
+
+pub fn make_repo_json_url(base_url: &str) -> String {
+    make_repo_file_url(base_url, "repo.json")
+}
+
 pub fn get_repository_info(agent: &mut ureq::Agent, url: &str) -> Result<Repository, Error> {
+    let repo_url = make_repo_json_url(url);
     agent
-        .get(url)
+        .get(&repo_url)
         .call()
         .context(HttpSnafu { url: url.to_string() })?
         .into_json()

@@ -52,7 +52,10 @@ pub fn diff_mod(
     local_base_path: &Path,
     remote_mod: &repository::Mod,
 ) -> Result<Vec<DownloadCommand>, Error> {
-    let remote_srf_url = format!("{}{}/mod.srf", repo_base_path, remote_mod.mod_name);
+    let remote_srf_url = repository::make_repo_file_url(
+        repo_base_path,
+        &format!("{}/mod.srf", remote_mod.mod_name)
+    );
     let mut remote_srf = agent
         .get(&remote_srf_url)
         .call()
@@ -125,14 +128,14 @@ pub fn diff_mod(
         if let Some(local_file) = local_file {
             if file.checksum != local_file.checksum {
                 download_list.push(DownloadCommand {
-                    file: format!("{}/{}", remote_srf.name, path),
+                    file: repository::make_repo_file_url(&remote_srf.name, path.as_str()),
                     begin: 0,
                     end: file.length,
                 });
             }
         } else {
             download_list.push(DownloadCommand {
-                file: format!("{}/{}", remote_srf.name, path),
+                file: repository::make_repo_file_url(&remote_srf.name, path.as_str()),
                 begin: 0,
                 end: file.length,
             });

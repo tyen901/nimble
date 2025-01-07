@@ -26,7 +26,8 @@ fn download_remote_srf(
     repo_url: &str,
     mod_name: &str,
 ) -> Result<srf::Mod, String> {
-    let remote_srf_url = format!("{}/{}/mod.srf", repo_url.trim_end_matches('/'), mod_name);
+    let base_url = crate::repository::normalize_repo_url(repo_url);
+    let remote_srf_url = format!("{}{}/mod.srf", base_url, mod_name);
     
     agent
         .get(&remote_srf_url)
@@ -60,7 +61,7 @@ pub fn scan_local_mods(
         let mod_path = base_path.join(&required_mod.mod_name);
         let remote_mod = download_remote_srf(agent, repo_url, &required_mod.mod_name)?;
 
-        if !mod_path.exists() {
+        if (!mod_path.exists()) {
             // Mod doesn't exist locally, collect all files from remote
             let files = remote_mod.files.iter().map(|f| FileUpdate {
                 path: f.path.clone(),
@@ -171,10 +172,12 @@ fn compare_mod_files(
     remote_checksum: String,
     agent: &mut ureq::Agent,
 ) -> Result<Vec<FileUpdate>, String> {
+    let base_url = crate::repository::normalize_repo_url(repo_url);
+    let remote_srf_url = format!("{}{}/mod.srf", base_url, mod_name);
+    
     let mut different_files = Vec::new();
 
     // Fetch remote mod.srf
-    let remote_srf_url = format!("{}/{}/mod.srf", repo_url.trim_end_matches('/'), mod_name);
     let remote_mod: srf::Mod = agent
         .get(&remote_srf_url)
         .call()

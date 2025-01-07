@@ -131,7 +131,7 @@ fn execute_command_list(
         }
 
         let mut temp_download_file = tempfile().context(IoSnafu)?;
-        let remote_url = format!("{}{}", remote_base, command.file);
+        let remote_url = repository::make_repo_file_url(remote_base, &command.file);
         
         let pb: ProgressBar = create_progress_bar(0);
         let sender = context.status_sender.clone();
@@ -200,7 +200,8 @@ pub fn sync_with_context(
 
     println!("Starting sync process from {}", repo_url);
     
-    let remote_repo = repository::get_repository_info(agent, &format!("{repo_url}/repo.json"))
+    // Get repository info using normalized URL
+    let remote_repo = repository::get_repository_info(agent, repo_url)
         .context(RepositoryFetchSnafu)?;
     check_cancelled()?;
 
@@ -227,6 +228,7 @@ pub fn sync_with_context(
 
     for r#mod in &check {
         println!("Checking mod: {}", r#mod.mod_name);
+        // Use normalized base URL for diffing
         match diff::diff_mod(agent, repo_url, base_path, r#mod).context(DiffSnafu) {
             Ok(commands) => {
                 println!("  - Found {} file(s) to update", commands.len());
@@ -247,6 +249,7 @@ pub fn sync_with_context(
         return Ok(());
     }
 
+    // Use normalized URL for downloads
     let res = execute_command_list(agent, repo_url, base_path, &download_commands, context);
 
     match res {
