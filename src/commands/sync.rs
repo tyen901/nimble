@@ -212,7 +212,15 @@ pub fn sync_with_context(
     }
     check_cancelled()?;
 
-    let mut mod_cache = open_cache_or_gen_srf(base_path).context(ModCacheOpenSnafu)?;
+    // Ensure we scan local files if cache is missing or invalid
+    let mut mod_cache = match ModCache::from_disk_or_empty(base_path).context(ModCacheOpenSnafu) {
+        Ok(cache) => cache,
+        Err(_) => {
+            println!("Cache missing or invalid, scanning local files...");
+            open_cache_or_gen_srf(base_path).context(ModCacheOpenSnafu)?
+        }
+    };
+
     let check = diff::diff_repo(&mod_cache, &remote_repo);
     check_cancelled()?;
 

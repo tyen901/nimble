@@ -27,6 +27,7 @@ eframe = "0.30.0"
 rfd = "0.15.2"
 dirs = "5.0"
 semver = "1.0"
+sha1 = "0.10.6"
 
 # The profile that 'dist' will build with
 [profile.dist]

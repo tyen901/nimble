@@ -1,9 +1,10 @@
-use crate::{mod_cache::ModCache, repository, srf};
+use crate::{md5_digest::Md5Digest, mod_cache::ModCache, repository, srf};
+use md5::{Md5, Digest};  // Change to use md5 instead of sha1
 use snafu::{ResultExt, Snafu};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
 pub struct DownloadCommand {
@@ -46,6 +47,32 @@ pub fn diff_repo<'a>(
     downloads
 }
 
+fn verify_file_checksum(path: &Path) -> Result<String, std::io::Error> {
+    let mut file = File::open(path)?;
+    let mut hasher = Md5::new();
+    let mut buffer = [0; 8192]; // Use a fixed buffer size for consistent reading
+    
+    loop {
+        let bytes_read = file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+    
+    Ok(format!("{:X}", hasher.finalize()))  // Use uppercase hex to match Md5Digest format
+}
+
+fn normalize_path(path: &str) -> String {
+    path.replace('\\', "/").to_lowercase()
+}
+
+fn verify_file_exists(base_path: &Path, relative_path: &str) -> bool {
+    let full_path = base_path.join(relative_path);
+    println!("Checking if file exists: {}", full_path.display());
+    full_path.exists()
+}
+
 pub fn diff_mod(
     agent: &ureq::Agent,
     repo_base_path: &str,
@@ -82,20 +109,29 @@ pub fn diff_mod(
 
     let local_srf = {
         if local_path.exists() {
-            let file = File::open(srf_path);
+            let file = File::open(&srf_path);
 
             match file {
                 Ok(file) => {
                     let mut reader = BufReader::new(file);
-
-                    if srf::is_legacy_srf(&mut reader).context(IoSnafu)? {
+                    let srf_result = if srf::is_legacy_srf(&mut reader).context(IoSnafu)? {
                         srf::deserialize_legacy_srf(&mut reader)
-                            .context(LegacySrfDeserializationSnafu)?
+                            .context(LegacySrfDeserializationSnafu)
                     } else {
-                        serde_json::from_reader(&mut reader).context(SrfDeserializationSnafu)?
+                        serde_json::from_reader(&mut reader).context(SrfDeserializationSnafu)
+                    };
+
+                    match srf_result {
+                        Ok(srf) => srf,
+                        Err(_) => {
+                            // If SRF is invalid, rescan the directory
+                            println!("Invalid SRF file found for {}, rescanning...", remote_mod.mod_name);
+                            srf::scan_mod(&local_path).context(SrfGenerationSnafu)?
+                        }
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    println!("No SRF file found for {}, scanning directory...", remote_mod.mod_name);
                     srf::scan_mod(&local_path).context(SrfGenerationSnafu)?
                 }
                 Err(e) => return Err(Error::Io { source: e }),
@@ -105,8 +141,22 @@ pub fn diff_mod(
         }
     };
 
-    if local_srf.checksum == remote_srf.checksum {
+    // Add debug logging
+    println!("Comparing mod {} (local checksum: {}, remote checksum: {})", 
+        remote_mod.mod_name,
+        local_srf.checksum,
+        remote_srf.checksum
+    );
+
+    // Verify checksums match before skipping
+    if local_srf.checksum == remote_srf.checksum 
+        && local_srf.files.len() == remote_srf.files.len() 
+        && local_path.exists() {
+        println!("Skipping mod {} - checksums match", remote_mod.mod_name);
         return Ok(vec![]);
+    }
+    else {
+        println!("Checksums don't match, comparing files...");
     }
 
     let mut local_files = HashMap::new();
@@ -124,25 +174,91 @@ pub fn diff_mod(
 
     for (path, file) in remote_files.drain() {
         let local_file = local_files.remove(path);
-
-        if let Some(local_file) = local_file {
-            if file.checksum != local_file.checksum {
-                download_list.push(DownloadCommand {
-                    file: repository::make_repo_file_url(&remote_srf.name, path.as_str()),
-                    begin: 0,
-                    end: file.length,
-                });
+        let full_repo_path = repository::make_repo_file_url(
+            &repository::normalize_repo_url(&remote_mod.mod_name),
+            path.as_str()
+        );
+        let normalized_path = normalize_path(path.as_str());
+        let local_full_path = local_path.join(&normalized_path);
+        
+        println!("Checking file: {} at {}", path, local_full_path.display());
+        
+        match local_file {
+            Some(local_file) => {
+                if file.checksum != local_file.checksum {
+                    if (!verify_file_exists(&local_path, &normalized_path)) {
+                        println!("Local file not found at {}", local_full_path.display());
+                        download_list.push(DownloadCommand {
+                            file: full_repo_path,
+                            begin: 0,
+                            end: file.length,
+                        });
+                    } else {
+                        match verify_file_checksum(&local_full_path) {
+                            Ok(actual_checksum) if actual_checksum == file.checksum => {
+                                println!("File {} exists with correct checksum, skipping", path);
+                                continue;
+                            }
+                            Ok(actual_checksum) => {
+                                println!("File {} has incorrect checksum: {} (expected {})", 
+                                    path, actual_checksum, file.checksum);
+                                download_list.push(DownloadCommand {
+                                    file: full_repo_path,
+                                    begin: 0,
+                                    end: file.length,
+                                });
+                            }
+                            Err(e) => {
+                                println!("Failed to verify checksum for {}: {}", path, e);
+                                download_list.push(DownloadCommand {
+                                    file: full_repo_path,
+                                    begin: 0,
+                                    end: file.length,
+                                });
+                            }
+                        }
+                    }
+                }
             }
-        } else {
-            download_list.push(DownloadCommand {
-                file: repository::make_repo_file_url(&remote_srf.name, path.as_str()),
-                begin: 0,
-                end: file.length,
-            });
+            None => {
+                if !verify_file_exists(&local_path, &normalized_path) {
+                    println!("File {} missing", path);
+                    download_list.push(DownloadCommand {
+                        file: full_repo_path,
+                        begin: 0,
+                        end: file.length,
+                    });
+                } else {
+                    match verify_file_checksum(&local_full_path) {
+                        Ok(actual_checksum) if actual_checksum == file.checksum => {
+                            println!("File {} exists with correct checksum, skipping", path);
+                            continue;
+                        }
+                        Ok(actual_checksum) => {
+                            println!("File {} exists but has wrong checksum: expected {}, found {}", 
+                                path, file.checksum, actual_checksum);
+                            download_list.push(DownloadCommand {
+                                file: full_repo_path,
+                                begin: 0,
+                                end: file.length,
+                            });
+                        }
+                        Err(e) => {
+                            println!("Failed to verify checksum for {}: {}", path, e);
+                            download_list.push(DownloadCommand {
+                                file: full_repo_path,
+                                begin: 0,
+                                end: file.length,
+                            });
+                        }
+                    }
+                }
+            }
         }
     }
 
-    remove_leftover_files(local_base_path, &remote_srf, local_files.into_values())
+    // Only remove leftover files if they're PBOs or don't exist
+    remove_leftover_files(local_base_path, &remote_srf, local_files.into_values(), true)
         .context(IoSnafu)?;
 
     Ok(download_list)
@@ -152,11 +268,15 @@ fn remove_leftover_files<'a>(
     local_base_path: &Path,
     r#mod: &srf::Mod,
     files: impl Iterator<Item = &'a srf::File>,
+    pbo_only: bool,
 ) -> Result<(), std::io::Error> {
     for file in files {
-        let path = file
-            .path
-            .to_path(local_base_path.join(Path::new(&r#mod.name)));
+        // Skip non-PBO files if pbo_only is true
+        if pbo_only && !file.path.to_string().to_lowercase().ends_with(".pbo") {
+            continue;
+        }
+
+        let path = local_base_path.join(&r#mod.name).join(file.path.to_string());
 
         println!("removing leftover file {}", &path.display());
 
