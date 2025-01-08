@@ -2,18 +2,22 @@ use eframe::egui;
 use std::path::PathBuf;
 use crate::repository::Repository;
 use crate::gui::widgets::{PathPicker, StatusDisplay, CommandHandler};
-use crate::gui::state::{CommandMessage, GuiState};
+use crate::gui::state::{CommandMessage, GuiState, Profile, GuiConfig};
 use std::sync::mpsc::Sender;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 pub struct ServerState {
     pub path_picker: PathPicker,
-    repository: Option<Repository>,
-    pub repo_url: String,
+    pub repository: Option<Repository>,
     pub status: StatusDisplay,
     sync_cancel: Arc<AtomicBool>,
     scan_results: Option<Vec<crate::commands::scan::ModUpdate>>,
+    pub profiles: Vec<Profile>,
+    pub selected_profile: Option<String>,
+    pub editing_profile: Option<Profile>,
+    auto_connect: bool,
+    first_show: bool,
 }
 
 impl Default for ServerState {
@@ -21,10 +25,14 @@ impl Default for ServerState {
         Self {
             path_picker: PathPicker::new("Base Path:", "Select Mods Directory"),
             repository: None,
-            repo_url: String::new(),
             status: StatusDisplay::default(),
             sync_cancel: Arc::new(AtomicBool::new(false)),
             scan_results: None,
+            profiles: Vec::new(),
+            selected_profile: None,
+            auto_connect: true,
+            editing_profile: None,
+            first_show: true,
         }
     }
 }
@@ -32,30 +40,174 @@ impl Default for ServerState {
 impl CommandHandler for ServerState {}
 
 impl ServerState {
+    // Change to public and return owned String
+    pub fn get_current_url(&self) -> Option<String> {
+        self.selected_profile
+            .as_ref()
+            .and_then(|name| self.profiles.iter().find(|p| &p.name == name))
+            .map(|profile| profile.repo_url.clone())
+    }
+
+    // Add this helper method
+    pub fn should_auto_connect(&mut self) -> bool {
+        if self.first_show && self.auto_connect && self.repository.is_none() {
+            self.first_show = false;
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui, sender: Option<&Sender<CommandMessage>>, state: &GuiState) {
+        self.first_show = false;
         self.status.show(ui);
 
-        if self.repository.is_none() {
-            // Show connection UI when no repository
-            if matches!(state, GuiState::Connecting) {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label("Connecting to server...");
-                });
-                return;
-            }
-
+        // Profile selector and info section
+        ui.group(|ui| {
+            ui.heading("Profiles");
             ui.horizontal(|ui| {
-                ui.label("Repository URL:");
-                ui.text_edit_singleline(&mut self.repo_url);
+                let prev_selection = self.selected_profile.clone();
+                egui::ComboBox::from_label("")
+                    .selected_text(self.selected_profile.as_deref().unwrap_or("Select Profile"))
+                    .show_ui(ui, |ui| {
+                        for profile in &self.profiles {
+                            ui.selectable_value(&mut self.selected_profile, Some(profile.name.clone()), &profile.name);
+                        }
+                    });
+
+                // Auto-connect checkbox
+                ui.checkbox(&mut self.auto_connect, "Auto-connect");
+
+                // Handle profile selection change
+                if prev_selection != self.selected_profile {
+                    if let Some(sender) = sender {
+                        // First disconnect if connected
+                        if self.repository.is_some() {
+                            sender.send(CommandMessage::Disconnect).ok();
+                            self.repository = None;
+                        }
+
+                        // Then update path and trigger config save
+                        if let Some(name) = &self.selected_profile {
+                            if let Some(profile) = self.profiles.iter().find(|p| &p.name == name) {
+                                self.path_picker.set_path(&profile.base_path);
+                                sender.send(CommandMessage::ConfigChanged).ok();
+
+                                // Auto-connect to new profile if enabled
+                                if self.auto_connect {
+                                    sender.send(CommandMessage::ConnectionStarted).ok();
+                                    crate::gui::panels::server::server_actions::connect_to_server(&profile.repo_url, sender.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if ui.button("New").clicked() {
+                    self.editing_profile = Some(Profile::default());
+                }
+
+                if let Some(selected) = &self.selected_profile {
+                    if ui.button("Edit").clicked() {
+                        if let Some(profile) = self.profiles.iter().find(|p| p.name == *selected) {
+                            self.editing_profile = Some(profile.clone());
+                        }
+                    }
+                    if ui.button("Delete").clicked() {
+                        self.profiles.retain(|p| p.name != *selected);
+                        self.selected_profile = None;
+                        if let Some(sender) = sender {
+                            sender.send(CommandMessage::ConfigChanged).ok();
+                        }
+                    }
+                }
             });
 
-            if ui.button("Connect").clicked() && sender.is_some() {
-                let repo_url = self.repo_url.clone();
-                let sender = sender.unwrap().clone();
-                sender.send(CommandMessage::ConnectionStarted).ok();
-                crate::gui::panels::server::server_actions::connect_to_server(&repo_url, sender);
+            // Show selected profile info
+            if let Some(name) = &self.selected_profile {
+                if let Some(profile) = self.profiles.iter().find(|p| &p.name == name) {
+                    ui.add_space(8.0);
+                    ui.label(format!("Name: {}", profile.name));
+                    ui.label(format!("URL: {}", profile.repo_url));
+                    ui.label(format!("Path: {}", profile.base_path.display()));
+                    
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        let is_connected = self.repository.is_some();
+                        if is_connected {
+                            if ui.button("Disconnect").clicked() && sender.is_some() {
+                                sender.unwrap().send(CommandMessage::Disconnect).ok();
+                            }
+                        } else if !matches!(state, GuiState::Connecting) {
+                            if ui.button("Connect").clicked() && sender.is_some() {
+                                let sender = sender.unwrap().clone();
+                                sender.send(CommandMessage::ConnectionStarted).ok();
+                                crate::gui::panels::server::server_actions::connect_to_server(&profile.repo_url, sender);
+                            }
+                        }
+                    });
+
+                    if matches!(state, GuiState::Connecting) {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Connecting to server...");
+                        });
+                    }
+                }
             }
+        });
+
+        // Profile editor dialog
+        if let Some(editing) = &mut self.editing_profile {
+            let mut should_close = false;
+            egui::Window::new("Edit Profile")
+                .show(ui.ctx(), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Name:");
+                        ui.text_edit_singleline(&mut editing.name);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Repository URL:");
+                        ui.text_edit_singleline(&mut editing.repo_url);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Base Path:");
+                        let path_str = editing.base_path.to_string_lossy();
+                        ui.label(path_str);
+                        if ui.button("Browse").clicked() {
+                            if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                                editing.base_path = path;
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() {
+                            if !editing.name.is_empty() {
+                                // Remove existing profile with same name
+                                self.profiles.retain(|p| p.name != editing.name);
+                                // Add new/updated profile
+                                self.profiles.push(editing.clone());
+                                self.selected_profile = Some(editing.name.clone());
+                                // Update current settings
+                                self.path_picker.set_path(&editing.base_path);
+                                if let Some(sender) = sender {
+                                    sender.send(CommandMessage::ConfigChanged).ok();
+                                }
+                                should_close = true;
+                            }
+                        }
+                        if ui.button("Cancel").clicked() {
+                            should_close = true;
+                        }
+                    });
+                });
+            
+            if should_close {
+                self.editing_profile = None;
+            }
+        }
+
+        if self.repository.is_none() {
             return;
         }
 
@@ -170,9 +322,12 @@ impl ServerState {
 
     fn show_sync_button(&mut self, ui: &mut egui::Ui, sender: Option<&Sender<CommandMessage>>) {
         if ui.button("Sync Mods").clicked() {
-            // Extract all values before any validation or status updates
+            let Some(repo_url) = self.get_current_url() else {
+                self.status.set_error("No profile selected");
+                return;
+            };
+
             let base_path = self.path_picker.path();
-            let repo_url = self.repo_url.clone();
             let sync_cancel = self.sync_cancel.clone();
             
             // Validate repository exists
@@ -187,7 +342,7 @@ impl ServerState {
             }
             
             if let Some(sender) = sender {
-                self.sync_cancel.store(false, Ordering::SeqCst); // Use SeqCst here too
+                self.sync_cancel.store(false, Ordering::SeqCst);
                 self.scan_results = None;
                 Self::start_sync_with_context(base_path, &repo_url, sync_cancel, sender.clone());
             }
@@ -220,6 +375,11 @@ impl ServerState {
 
     fn show_scan_button(&mut self, ui: &mut egui::Ui, sender: Option<&Sender<CommandMessage>>) {
         if ui.button("Scan Mods").clicked() {
+            let Some(repo_url) = self.get_current_url() else {
+                self.status.set_error("No profile selected");
+                return;
+            };
+
             let base_path = self.path_picker.path();
             
             // Validate repository exists
@@ -235,7 +395,7 @@ impl ServerState {
 
             if let Some(sender) = sender {
                 let repo = self.repository.as_ref().unwrap().clone();
-                let repo_url = self.repo_url.clone();
+                let repo_url = self.get_current_url().unwrap();
                 let base_path = base_path.clone();
                 let sender_clone = sender.clone();
                 
@@ -279,17 +439,12 @@ impl ServerState {
         }
     }
 
-    pub fn set_repository(&mut self, repo: Repository, url: String) {
+    pub fn set_repository(&mut self, repo: Repository) {
         self.repository = Some(repo);
-        self.repo_url = url;
     }
 
     pub fn repository(&self) -> Option<&Repository> {
         self.repository.as_ref()
-    }
-
-    pub fn set_url(&mut self, url: String) {
-        self.repo_url = url;
     }
 
     fn start_sync_with_context(base_path: PathBuf, repo_url: &str, sync_cancel: Arc<AtomicBool>, sender: Sender<CommandMessage>) {
@@ -307,5 +462,18 @@ impl ServerState {
                 Err(e) => sender.send(CommandMessage::SyncError(e.to_string())),
             }.ok();
         });
+    }
+
+    pub fn load_from_config(&mut self, config: &GuiConfig) {
+        self.profiles = config.profiles.clone();
+        self.selected_profile = config.selected_profile.clone();
+        if let Some(profile) = config.get_selected_profile() {
+            self.path_picker.set_path(&profile.base_path);
+        }
+    }
+
+    pub fn save_to_config(&self, config: &mut GuiConfig) {
+        config.profiles = self.profiles.clone();
+        config.selected_profile = self.selected_profile.clone();
     }
 }

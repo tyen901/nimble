@@ -68,14 +68,22 @@ pub enum GuiState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Profile {
+    pub name: String,
+    pub repo_url: String,
+    pub base_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuiConfig {
     #[serde(default = "default_version")]
     version: u32,
-    pub repo_url: String,
-    pub base_path: PathBuf,
     #[serde(default = "default_window_size")]
     window_size: (f32, f32),
-    pub last_repo_path: Option<PathBuf>,
+    #[serde(default)]
+    pub profiles: Vec<Profile>,
+    #[serde(default)]
+    pub selected_profile: Option<String>,
 }
 
 fn default_version() -> u32 {
@@ -90,10 +98,19 @@ impl Default for GuiConfig {
     fn default() -> Self {
         Self {
             version: default_version(),
+            window_size: default_window_size(),
+            profiles: Vec::new(),
+            selected_profile: None,
+        }
+    }
+}
+
+impl Default for Profile {
+    fn default() -> Self {
+        Self {
+            name: "Default".to_string(),
             repo_url: String::new(),
             base_path: PathBuf::new(),
-            window_size: default_window_size(),
-            last_repo_path: None,
         }
     }
 }
@@ -120,14 +137,16 @@ impl GuiConfig {
 
     // Modify validate to only check non-version requirements
     pub fn validate(&self) -> Result<(), String> {
-        if !self.base_path.exists() {
-            return Err("Base path does not exist".into());
-        }
-        if !self.base_path.is_dir() {
-            return Err("Base path is not a directory".into());
-        }
-        if self.repo_url.is_empty() {
-            return Err("Repository URL is required".into());
+        if let Some(profile) = self.get_selected_profile() {
+            if !profile.base_path.exists() {
+                return Err("Base path does not exist".into());
+            }
+            if !profile.base_path.is_dir() {
+                return Err("Base path is not a directory".into());
+            }
+            if profile.repo_url.is_empty() {
+                return Err("Repository URL is required".into());
+            }
         }
         Ok(())
     }
@@ -140,11 +159,22 @@ impl GuiConfig {
         self.window_size = (size.x, size.y);
     }
 
-    pub fn set_last_repo_path(&mut self, path: Option<PathBuf>) {
-        self.last_repo_path = path;
+    pub fn add_profile(&mut self, profile: Profile) {
+        self.profiles.push(profile);
     }
 
-    pub fn last_repo_path(&self) -> Option<&PathBuf> {
-        self.last_repo_path.as_ref()
+    pub fn remove_profile(&mut self, name: &str) {
+        self.profiles.retain(|p| p.name != name);
+        if self.selected_profile.as_deref() == Some(name) {
+            self.selected_profile = None;
+        }
+    }
+
+    pub fn get_profile(&self, name: &str) -> Option<&Profile> {
+        self.profiles.iter().find(|p| p.name == name)
+    }
+
+    pub fn get_selected_profile(&self) -> Option<&Profile> {
+        self.selected_profile.as_ref().and_then(|name| self.get_profile(name))
     }
 }

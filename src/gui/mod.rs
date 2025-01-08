@@ -48,12 +48,7 @@ impl NimbleGui {
 impl eframe::App for NimbleGui {
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {
         // Update config from panels before saving
-        self.config.repo_url = self.server_panel.repo_url().to_string();
-        self.config.base_path = self.server_panel.base_path();
-        
-        // Use new accessor method instead of direct field access
-        let path = self.create_repo_panel.get_current_path();
-        self.config.set_last_repo_path(Some(path));
+        self.server_panel.save_to_config(&mut self.config);
         
         if let Err(e) = self.config.save() {
             eprintln!("Failed to save config: {}", e);
@@ -85,8 +80,7 @@ impl eframe::App for NimbleGui {
                 match msg {
                     CommandMessage::ConfigChanged => {
                         // Update config when panels report changes
-                        self.config.repo_url = self.server_panel.repo_url().to_string();
-                        self.config.base_path = self.server_panel.base_path();
+                        self.server_panel.save_to_config(&mut self.config);
                         if let Err(e) = self.config.save() {
                             eprintln!("Failed to save config: {}", e);
                         }

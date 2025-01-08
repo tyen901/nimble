@@ -20,10 +20,12 @@ impl CreateRepoPanel {
         let mut panel = Self::default();
         panel.state.config = Some(config.clone());
 
-        if let Some(path) = config.last_repo_path() {
+        // Try to use the path from the selected profile, if any
+        if let Some(profile) = config.get_selected_profile() {
+            let path = &profile.base_path;
             if path.exists() {
                 panel.state.base_path.set_path(path);
-                panel.scan_mods(&path);
+                panel.scan_mods(path);
             }
         }
 
@@ -31,9 +33,8 @@ impl CreateRepoPanel {
     }
 
     fn update_config(&mut self) {
-        if let Some(config) = &mut self.state.config {
-            config.set_last_repo_path(Some(self.state.base_path.path().to_path_buf()));
-        }
+        // No longer need to update last_repo_path since we're using profiles
+        // Config updates should be handled through the server panel
     }
 
     fn scan_mods(&mut self, path: &PathBuf) {
