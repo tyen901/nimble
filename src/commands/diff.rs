@@ -48,19 +48,7 @@ pub fn diff_repo<'a>(
 }
 
 fn verify_file_checksum(path: &Path) -> Result<String, std::io::Error> {
-    let mut file = File::open(path)?;
-    let mut hasher = Md5::new();
-    let mut buffer = [0; 8192]; // Use a fixed buffer size for consistent reading
-    
-    loop {
-        let bytes_read = file.read(&mut buffer)?;
-        if bytes_read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..bytes_read]);
-    }
-    
-    Ok(format!("{:X}", hasher.finalize()))  // Use uppercase hex to match Md5Digest format
+    Ok(Md5Digest::from_file(path)?.to_string())
 }
 
 fn normalize_path(path: &str) -> String {
@@ -149,7 +137,10 @@ pub fn diff_mod(
     );
 
     // Verify checksums match before skipping
-    if local_srf.checksum == remote_srf.checksum 
+    let local_digest = local_srf.checksum.clone();
+    let remote_digest = remote_srf.checksum.clone();
+
+    if local_digest == remote_digest 
         && local_srf.files.len() == remote_srf.files.len() 
         && local_path.exists() {
         println!("Skipping mod {} - checksums match", remote_mod.mod_name);

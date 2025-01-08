@@ -2,6 +2,10 @@ use hex::FromHexError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use snafu::{ResultExt, Snafu};
 use std::fmt::{Debug, Formatter};
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
+use md5::{Md5, Digest};
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -25,6 +29,23 @@ impl Md5Digest {
     pub fn from_bytes(bytes: [u8; 16]) -> Self {
         Self { inner: bytes }
     }
+
+    pub fn from_file(path: &Path) -> std::io::Result<Self> {
+        let mut file = File::open(path)?;
+        let mut hasher = Md5::new();
+        let mut buffer = [0; 8192];
+        
+        loop {
+            let bytes_read = file.read(&mut buffer)?;
+            if bytes_read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..bytes_read]);
+        }
+        
+        Ok(Self::from_bytes(hasher.finalize().try_into().unwrap()))
+    }
+
 }
 
 impl Serialize for Md5Digest {
