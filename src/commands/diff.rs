@@ -66,6 +66,7 @@ pub fn diff_mod(
     repo_base_path: &str,
     local_base_path: &Path,
     remote_mod: &repository::Mod,
+    force_scan: bool,
 ) -> Result<Vec<DownloadCommand>, Error> {
     // Get remote SRF first
     let remote_srf_url = repository::make_repo_file_url(
@@ -95,9 +96,20 @@ pub fn diff_mod(
 
     let local_path = local_base_path.join(Path::new(&format!("{}/", remote_mod.mod_name)));
 
+    // If force scan, delete the local SRF file first
+    if force_scan {
+        println!("Force scanning directory for {}...", remote_mod.mod_name);
+        let srf_path = local_path.join("mod.srf");
+        if srf_path.exists() {
+            if let Err(e) = std::fs::remove_file(&srf_path) {
+                eprintln!("Warning: Failed to delete SRF file: {}", e);
+            }
+        }
+    }
+
     let local_srf = if !local_path.exists() {
         srf::Mod::generate_invalid(&remote_srf)
-    } else if local_path.exists() {
+    } else {
         let srf_path = local_path.join(Path::new("mod.srf"));
         let file = File::open(&srf_path);
         match file {
@@ -125,8 +137,6 @@ pub fn diff_mod(
             }
             Err(e) => return Err(Error::Io { source: e }),
         }
-    } else {
-        srf::Mod::generate_invalid(&remote_srf)
     };
 
     // Add debug logging

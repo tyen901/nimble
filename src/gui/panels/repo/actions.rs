@@ -48,6 +48,7 @@ pub fn show_sync_button(
             state.sync_cancel().store(false, Ordering::SeqCst);
             let repo = state.repository().expect("Repository not available").clone();
             let repo_url = profile.repo_url.clone();
+            let force_scan = state.force_scan();
             
             sender.send(CommandMessage::SyncStarted).ok();
             
@@ -63,6 +64,7 @@ pub fn show_sync_button(
                     &repo_url,
                     &base_path,
                     false,
+                    force_scan,
                     &sync_context
                 ) {
                     Ok(()) => sender.send(CommandMessage::SyncComplete),

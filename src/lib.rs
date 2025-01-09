@@ -103,7 +103,7 @@ pub fn run(args: Args) -> Result<(), NimbleError> {
             path,
             dry_run,
         } => {
-            commands::sync::sync(&mut agent, &repo_url, &path, dry_run)?;
+            commands::sync::sync(&mut agent, &repo_url, &path, false, dry_run)?;
         }
         Commands::GenSrf { path, output } => {
             commands::gen_srf::gen_srf(&path, output.as_deref(), None)?;

@@ -51,6 +51,7 @@ pub fn scan_local_mods(
     base_path: &Path,
     repository: &Repository,
     status_sender: &Sender<CommandMessage>,
+    force_sync: bool,  // Add force_sync parameter
 ) -> Result<Vec<ModUpdate>, String> {
     let mut updates_needed = Vec::new();
     let temp_dir = base_path.join(TEMP_FOLDER);
@@ -69,7 +70,8 @@ pub fn scan_local_mods(
         let mod_path = base_path.join(&required_mod.mod_name);
         let remote_mod = download_remote_srf(agent, repo_url, &required_mod.mod_name)?;
 
-        if (!mod_path.exists()) {
+        // If force_sync is true or mod doesn't exist, add all files
+        if force_sync || !mod_path.exists() {
             updates_needed.push(ModUpdate {
                 name: required_mod.mod_name.clone(),
                 files: create_file_updates(&remote_mod.files),

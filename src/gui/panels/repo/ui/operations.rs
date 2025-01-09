@@ -25,6 +25,9 @@ impl OperationsView {
             ui.group(|ui| {
                 ui.heading("Operations");
                 ui.add_enabled_ui(!state.is_busy(), |ui| {
+                    // Add force scan checkbox
+                    ui.checkbox(&mut state.force_scan, "Force full scan");
+                    ui.add_space(4.0);
                     actions::show_action_buttons(ui, state, sender, &base_path);
                 });
 

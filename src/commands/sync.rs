@@ -174,9 +174,10 @@ pub fn sync(
     repo_url: &str,
     base_path: &Path,
     dry_run: bool,
+    force_scan: bool,
 ) -> Result<(), Error> {
     let context = SyncContext::default();
-    sync_with_context(agent, repo_url, base_path, dry_run, &context)
+    sync_with_context(agent, repo_url, base_path, dry_run, force_scan, &context)
 }
 
 pub fn sync_with_context(
@@ -184,8 +185,20 @@ pub fn sync_with_context(
     repo_url: &str,
     base_path: &Path,
     dry_run: bool,
+    force_sync: bool,
     context: &SyncContext,
 ) -> Result<(), Error> {
+    // If force sync, delete the cache file first
+    if force_sync {
+        let cache_path = base_path.join("nimble-cache.json");
+        if cache_path.exists() {
+            println!("Force sync: Deleting cache file");
+            if let Err(e) = std::fs::remove_file(&cache_path) {
+                eprintln!("Warning: Failed to delete cache file: {}", e);
+            }
+        }
+    }
+
     let check_cancelled = || {
         if context.cancel.load(Ordering::SeqCst) {
             return Err(Error::Cancelled);
@@ -214,7 +227,7 @@ pub fn sync_with_context(
     let mut failed_mods = Vec::new();
 
     for r#mod in &remote_repo.required_mods {
-        match diff::diff_mod(agent, repo_url, base_path, r#mod).context(DiffSnafu) {
+        match diff::diff_mod(agent, repo_url, base_path, r#mod, force_sync).context(DiffSnafu) {
             Ok(commands) => {
                 if !commands.is_empty() {
                     println!("Mod {} needs {} file(s) updated", r#mod.mod_name, commands.len());
@@ -248,7 +261,7 @@ pub fn sync_with_context(
                 .collect();
             
             update_mod_cache(base_path, &changed_mods, &mut mod_cache)?;
-
+            
             // Update repository info in cache
             mod_cache.repository = Some(remote_repo.clone());
             mod_cache.last_sync = Some(chrono::Utc::now());

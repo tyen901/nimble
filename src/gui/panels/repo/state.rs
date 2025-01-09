@@ -40,6 +40,7 @@ pub struct RepoPanelState {
     pub(crate) local_repository: Option<Repository>,  // From cache
     pub(crate) remote_repository: Option<Repository>, // From server
     pub(crate) operation_state: OperationState,
+    pub(crate) force_scan: bool,
 }
 
 impl Default for RepoPanelState {
@@ -56,6 +57,7 @@ impl Default for RepoPanelState {
             local_repository: None,
             remote_repository: None,
             operation_state: OperationState::Idle,
+            force_scan: false,
         }
     }
 }
@@ -230,5 +232,13 @@ impl RepoPanelState {
 
     pub fn can_launch(&self) -> bool {
         self.has_local_data() && !self.is_busy()
+    }
+
+    pub fn force_scan(&self) -> bool {
+        self.force_scan
+    }
+
+    pub fn set_force_scan(&mut self, force: bool) {
+        self.force_scan = force;
     }
 }

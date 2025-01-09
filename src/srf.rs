@@ -249,14 +249,13 @@ pub fn scan_file(path: &Path, base_path: &Path) -> Result<File, Error> {
 }
 
 fn recurse(path: &Path, base_path: &Path) -> Result<Vec<File>, Error> {
-    println!("recursing into {:#?}", &path);
+    println!("Starting scan of directory: {}", path.display());
 
     let entries: Vec<_> = WalkDir::new(path)
         .into_iter()
         .filter_entry(|e| e.file_name() != OsStr::new("mod.srf"))
         .filter_map(Result::ok)
         .filter(|e| {
-            // someday this spaghetti can just be replaced by Option::contains
             if let Some(is_dir) = e.metadata().ok().map(|metadata| metadata.is_dir()) {
                 !is_dir
             } else {
@@ -266,19 +265,36 @@ fn recurse(path: &Path, base_path: &Path) -> Result<Vec<File>, Error> {
         .map(|entry| entry.path().to_owned())
         .collect();
 
+    println!("Found {} files to process", entries.len());
+
+    let pbo_count = std::sync::atomic::AtomicUsize::new(0);
+    let other_count = std::sync::atomic::AtomicUsize::new(0);
+
     let files: Result<Vec<_>, _> = entries
         .par_iter()
         .map(|path| {
             let extension = path.extension();
-
             match extension {
-                Some(extension) if extension == "pbo" => scan_pbo(path, base_path),
-                _ => scan_file(path, base_path),
+                Some(extension) if extension == "pbo" => {
+                    pbo_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    scan_pbo(path, base_path)
+                },
+                _ => {
+                    other_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    scan_file(path, base_path)
+                }
             }
         })
         .collect();
 
-    files
+    let files = files?;
+    println!("Scan completed for {}", path.display());
+    println!("Summary:");
+    println!("  - Total files processed: {}", files.len());
+    println!("  - PBO files: {}", pbo_count.load(std::sync::atomic::Ordering::Relaxed));
+    println!("  - Other files: {}", other_count.load(std::sync::atomic::Ordering::Relaxed));
+
+    Ok(files)
 }
 
 pub fn scan_mod(path: &Path) -> Result<Mod, Error> {
