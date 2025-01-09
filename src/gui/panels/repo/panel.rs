@@ -164,8 +164,8 @@ impl RepoPanel {
             ui.add_space(8.0);
             self.show_server_info(ui);
             
-            // Show action buttons if we have a URL
-            if let Some(url) = self.state.profile_manager.get_current_url() {
+            // Show action buttons if we have a profile
+            if self.state.profile_manager.get_selected_profile().is_some() {
                 let base_path = self.state.profile_manager.get_base_path();
                 match gui_state {
                     GuiState::Scanning { message } => {
@@ -198,7 +198,7 @@ impl RepoPanel {
                                 .text(format!("{}/{}", files_processed, total_files)));
                         });
                     }
-                    _ => show_action_buttons(ui, &mut self.state, sender, &base_path, &url),
+                    _ => show_action_buttons(ui, &mut self.state, sender, &base_path),
                 }
             }
         }

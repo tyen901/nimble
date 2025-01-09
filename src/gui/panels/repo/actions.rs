@@ -13,12 +13,11 @@ pub fn show_action_buttons(
     state: &mut RepoPanelState,
     sender: Option<&Sender<CommandMessage>>,
     base_path: &PathBuf,
-    repo_url: &str,
 ) {
     ui.horizontal(|ui| {
-        show_scan_button(ui, state, sender, base_path, repo_url);
+        show_scan_button(ui, state, sender, base_path);
         ui.add_space(8.0);
-        show_sync_button(ui, state, sender, base_path, repo_url);
+        show_sync_button(ui, state, sender);
         ui.add_space(8.0);
         show_launch_button(ui, state, sender, base_path);
     });
@@ -29,7 +28,6 @@ fn show_scan_button(
     state: &mut RepoPanelState,
     sender: Option<&Sender<CommandMessage>>,
     base_path: &PathBuf,
-    repo_url: &str,
 ) {
     if ui.button("Scan Mods").clicked() {
         if !state.is_connected() {
@@ -42,9 +40,25 @@ fn show_scan_button(
             return;
         }
 
+        // Get all required data before spawning thread
+        let repo = match state.repository() {
+            Some(repo) => repo.clone(),
+            None => {
+                state.status().set_error("Repository not available");
+                return;
+            }
+        };
+
+        let profile = match state.profile_manager().get_selected_profile() {
+            Some(profile) => profile.clone(),
+            None => {
+                state.status().set_error("No profile selected");
+                return;
+            }
+        };
+
         if let Some(sender) = sender {
-            let repo = state.repository().unwrap().clone();
-            let repo_url = repo_url.to_string();
+            let repo_url = profile.repo_url.clone();
             let base_path = base_path.clone();
             let sender_clone = sender.clone();
             
@@ -92,31 +106,39 @@ fn show_sync_button(
     ui: &mut egui::Ui,
     state: &mut RepoPanelState,
     sender: Option<&Sender<CommandMessage>>,
-    base_path: &PathBuf,
-    repo_url: &str,
 ) {
     if ui.button("Sync Mods").clicked() {
         if !state.is_connected() {
             state.status().set_error("No repository connected");
             return;
         }
-        
+
+        // Get all required data before spawning thread
+        let profile = match state.profile_manager().get_selected_profile() {
+            Some(profile) => profile.clone(),
+            None => {
+                state.status().set_error("No profile selected");
+                return;
+            }
+        };
+
+        let base_path = profile.base_path.clone();
         if base_path.to_str().unwrap_or("").trim().is_empty() {
             state.status().set_error("Base path is required");
             return;
         }
-        
+
         if let Some(sender) = sender {
+            // Store cancel state before thread spawn
             state.sync_cancel().store(false, Ordering::SeqCst);
             state.set_scan_results(None);
-            
+
             let sync_context = crate::commands::sync::SyncContext {
                 cancel: state.sync_cancel().clone(),
                 status_sender: Some(sender.clone()),
             };
 
-            let repo_url = repo_url.to_string();
-            let base_path = base_path.clone();
+            let repo_url = profile.repo_url;
             let sender = sender.clone();
 
             std::thread::spawn(move || {
