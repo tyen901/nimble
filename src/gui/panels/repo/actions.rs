@@ -146,7 +146,6 @@ pub fn show_sync_button(
                     &repo_url,
                     &base_path,
                     false,
-                    false,
                     &sync_context
                 ) {
                     Ok(()) => sender.send(CommandMessage::SyncComplete),

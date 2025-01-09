@@ -66,7 +66,6 @@ pub fn diff_mod(
     repo_base_path: &str,
     local_base_path: &Path,
     remote_mod: &repository::Mod,
-    force_sync: bool,  // Add this parameter
 ) -> Result<Vec<DownloadCommand>, Error> {
     // Get remote SRF first
     let remote_srf_url = repository::make_repo_file_url(
@@ -96,14 +95,8 @@ pub fn diff_mod(
 
     let local_path = local_base_path.join(Path::new(&format!("{}/", remote_mod.mod_name)));
 
-    // For force sync, we directly scan the directory instead of using SRF cache
-    let local_srf = if force_sync {
-        println!("Force sync requested for {}, scanning directory...", remote_mod.mod_name);
-        if local_path.exists() {
-            srf::scan_mod(&local_path).context(SrfGenerationSnafu)?
-        } else {
-            srf::Mod::generate_invalid(&remote_srf)
-        }
+    let local_srf = if !local_path.exists() {
+        srf::Mod::generate_invalid(&remote_srf)
     } else if local_path.exists() {
         let srf_path = local_path.join(Path::new("mod.srf"));
         let file = File::open(&srf_path);
@@ -256,7 +249,7 @@ pub fn diff_mod(
     }
 
     // Only remove leftover files if they're PBOs or don't exist
-    remove_leftover_files(local_base_path, &remote_srf, local_files.into_values(), true)
+    remove_leftover_files(local_base_path, &remote_srf, local_files.into_values())
         .context(IoSnafu)?;
 
     Ok(download_list)
@@ -266,15 +259,8 @@ fn remove_leftover_files<'a>(
     local_base_path: &Path,
     r#mod: &srf::Mod,
     files: impl Iterator<Item = &'a srf::File>,
-    pbo_only: bool,
 ) -> Result<(), std::io::Error> {
     for file in files {
-        // Don't skip non-PBO files during force sync
-        if pbo_only && !file.path.to_string().to_lowercase().ends_with(".pbo") {
-            println!("Skipping non-PBO file {} (not in force sync mode)", file.path);
-            continue;
-        }
-
         let path = local_base_path.join(&r#mod.name).join(file.path.to_string());
 
         println!("removing leftover file {}", &path.display());
