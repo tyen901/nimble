@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 use crate::repository::{Repository, Mod};
 use crate::gui::widgets::{PathPicker, StatusDisplay};
-use crate::gui::state::GuiConfig;
 use crate::md5_digest::Md5Digest;
 
 pub struct CreateRepoPanelState {
@@ -11,7 +10,6 @@ pub struct CreateRepoPanelState {
     pub last_scanned_path: Option<PathBuf>,
     pub show_update_prompt: bool,
     pub pending_mods: Option<Vec<Mod>>,
-    pub config: Option<GuiConfig>,
     pub clean_options: CleanOptions,
 }
 
@@ -39,7 +37,6 @@ impl Default for CreateRepoPanelState {
             last_scanned_path: None,
             show_update_prompt: false,
             pending_mods: None,
-            config: None,
             clean_options: CleanOptions {
                 force_lowercase: true,
                 excluded_files: ".git;.gitignore;.gitattributes;.gitmodules;.DS_Store;Thumbs.db;desktop.ini".to_string(),
