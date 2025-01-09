@@ -89,7 +89,7 @@ pub fn show_scan_button(
                             sender_clone.send(CommandMessage::ScanningStatus(msg)).ok();
                         }
                         std::thread::sleep(std::time::Duration::from_secs(2));
-                        sender_clone.send(CommandMessage::SyncComplete).ok();
+                        sender_clone.send(CommandMessage::ScanComplete(updates)).ok();
                     }
                     Err(e) => {
                         sender_clone.send(CommandMessage::SyncError(e)).ok();

@@ -6,13 +6,13 @@ use std::path::Path;
 use std::sync::mpsc::Sender;
 use std::{fs, io};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ModUpdate {
     pub name: String,
     pub files: Vec<FileUpdate>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FileUpdate {
     pub path: RelativePathBuf,
     pub checksum: String,

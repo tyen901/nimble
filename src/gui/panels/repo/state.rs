@@ -102,7 +102,6 @@ impl RepoPanelState {
         self.connection_state = ConnectionState::Disconnected;
     }
 
-    // Add method to explicitly clear repository data
     pub fn clear_repository(&mut self) {
         self.repository = None;
     }
@@ -141,7 +140,6 @@ impl RepoPanelState {
     }
 
     pub fn get_launch_parameters(&self) -> Option<String> {
-        // Check local repository first, then remote
         self.local_repository
             .as_ref()
             .map(|repo| repo.client_parameters.clone())
@@ -155,14 +153,7 @@ impl RepoPanelState {
         };
     }
 
-    pub fn update_from_remote(&mut self, repo: Repository) {
-        self.remote_repository = Some(repo.clone());
-        self.local_repository = Some(repo);
-        self.cache_state = CacheState::CacheLoaded(chrono::Utc::now());
-    }
-
     pub fn sync_succeeded(&mut self) {
-        // Only update cache state after successful sync
         if let Some(repo) = self.remote_repository.clone() {
             self.local_repository = Some(repo);
             self.cache_state = CacheState::CacheLoaded(chrono::Utc::now());

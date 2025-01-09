@@ -112,7 +112,8 @@ impl RepoPanel {
             CommandMessage::ScanStarted => {
                 self.state.set_scanning();
             },
-            CommandMessage::ScanComplete(_) => {
+            CommandMessage::ScanComplete(results) => {
+                self.state.set_scan_results(Some(results.to_vec()));
                 self.state.set_idle();
             },
             CommandMessage::SyncStarted => {
