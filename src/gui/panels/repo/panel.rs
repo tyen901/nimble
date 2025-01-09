@@ -120,6 +120,7 @@ impl RepoPanel {
             },
             CommandMessage::SyncComplete => {
                 self.state.set_idle();
+                self.state.sync_succeeded();
             },
             CommandMessage::LaunchStarted => {
                 self.state.set_launching();

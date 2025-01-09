@@ -269,6 +269,11 @@ pub fn sync_with_context(
             let check_refs: Vec<&repository::Mod> = check.iter().copied().collect();
             update_mod_cache(base_path, &check_refs, &mut mod_cache)?;
 
+            // Update the mod_cache with remote repository info
+            mod_cache.repository = Some(remote_repo.clone());
+            mod_cache.last_sync = Some(chrono::Utc::now());
+            mod_cache.to_disk(base_path).context(ModCacheOpenSnafu)?;
+
             if (!failed_mods.is_empty()) {
                 println!("Sync completed with some failures:");
                 for failed in failed_mods {

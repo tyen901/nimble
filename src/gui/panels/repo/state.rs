@@ -88,17 +88,17 @@ impl RepoPanelState {
     }
 
     pub fn set_connected(&mut self, repo: Repository) {
-        self.repository = Some(repo);
+        let repo_clone = repo.clone();
+        self.repository = Some(repo_clone);
+        self.remote_repository = Some(repo);
         self.connection_state = ConnectionState::Connected;
     }
 
     pub fn set_connection_error(&mut self, error: String) {
-        // Don't clear repository data on error, only change connection state
         self.connection_state = ConnectionState::Error(error);
     }
 
     pub fn disconnect(&mut self) {
-        // Don't clear repository data on disconnect, only change connection state
         self.connection_state = ConnectionState::Disconnected;
     }
 
@@ -159,6 +159,14 @@ impl RepoPanelState {
         self.remote_repository = Some(repo.clone());
         self.local_repository = Some(repo);
         self.cache_state = CacheState::CacheLoaded(chrono::Utc::now());
+    }
+
+    pub fn sync_succeeded(&mut self) {
+        // Only update cache state after successful sync
+        if let Some(repo) = self.remote_repository.clone() {
+            self.local_repository = Some(repo);
+            self.cache_state = CacheState::CacheLoaded(chrono::Utc::now());
+        }
     }
 
     pub fn has_local_data(&self) -> bool {
