@@ -35,6 +35,10 @@ type SrfMod = crate::srf::Mod;
 pub struct ModCache {
     version: u32,
     pub mods: HashMap<Md5Digest, Mod>,
+    pub repository: Option<crate::repository::Repository>,
+    pub last_updated: Option<chrono::DateTime<chrono::Utc>>,
+    /// Last sync timestamp to track when the cache was updated from remote
+    pub last_sync: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl ModCache {
@@ -42,6 +46,9 @@ impl ModCache {
         Ok(Self {
             version: 1,
             mods: mods.into_iter().map(|(k, v)| (k, v.into())).collect(),
+            repository: None,
+            last_updated: None,
+            last_sync: None,
         })
     }
 
@@ -49,6 +56,9 @@ impl ModCache {
         Ok(Self {
             version: 1,
             mods: HashMap::new(),
+            repository: None,
+            last_updated: None,
+            last_sync: None,
         })
     }
 
@@ -90,5 +100,40 @@ impl ModCache {
 
     pub fn insert(&mut self, r#mod: crate::srf::Mod) {
         self.mods.insert(r#mod.checksum.clone(), r#mod.into());
+    }
+
+    // Add methods for repository caching
+    pub fn update_repository(&mut self, repo: crate::repository::Repository) {
+        self.repository = Some(repo);
+        self.last_updated = Some(chrono::Utc::now());
+    }
+
+    pub fn get_repository(&self) -> Option<&crate::repository::Repository> {
+        self.repository.as_ref()
+    }
+
+    pub fn is_cache_fresh(&self, max_age_hours: i64) -> bool {
+        self.last_updated
+            .map(|time| {
+                let age = chrono::Utc::now() - time;
+                age.num_hours() < max_age_hours
+            })
+            .unwrap_or(false)
+    }
+
+    pub fn update_from_remote(&mut self, repo: crate::repository::Repository, base_path: &Path) -> Result<(), Error> {
+        self.repository = Some(repo);
+        self.last_sync = Some(chrono::Utc::now());
+        self.last_updated = Some(chrono::Utc::now());
+        self.to_disk(base_path)?;
+        Ok(())
+    }
+
+    pub fn is_synced(&self) -> bool {
+        self.last_sync.is_some()
+    }
+
+    pub fn sync_age(&self) -> Option<chrono::Duration> {
+        self.last_sync.map(|time| chrono::Utc::now() - time)
     }
 }

@@ -4,6 +4,7 @@ use snafu::prelude::*;
 use std::{fmt::Display, net::IpAddr, str::FromStr};
 use ureq::Agent;
 use md5::Digest;
+use std::path::Path;
 
 #[derive(Debug, Snafu)]
 pub enum Error {

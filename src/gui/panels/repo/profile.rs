@@ -5,6 +5,8 @@ use crate::gui::widgets::PathPicker;
 use crate::gui::state::{CommandMessage, GuiConfig};
 use std::sync::mpsc::Sender;
 
+use super::state::RepoPanelState;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Profile {
     pub name: String,
@@ -42,15 +44,15 @@ impl Default for ProfileManager {
 
 impl ProfileManager {
     pub fn load_from_config(&mut self, config: &GuiConfig) {
+        // Load profiles and selected profile first
         self.profiles = config.get_profiles().clone();
         self.selected_profile = config.get_selected_profile_name().clone();
         
-        // Get the path before updating path_picker to avoid borrow issues
-        let path = self.get_selected_profile()
-            .map(|profile| profile.base_path.clone());
-            
-        if let Some(path) = path {
-            self.path_picker.set_path(&path);
+        // Then find and update path separately to avoid borrow conflicts
+        if let Some(name) = &self.selected_profile {
+            if let Some(profile) = self.profiles.iter().find(|p| &p.name == name) {
+                self.path_picker.set_path(&profile.base_path);
+            }
         }
     }
 
@@ -74,8 +76,13 @@ impl ProfileManager {
             .map(|profile| profile.repo_url.clone())
     }
 
-    pub fn show_editor(&mut self, ui: &mut egui::Ui, sender: Option<&Sender<CommandMessage>>) -> bool {
+    pub fn show_editor(
+        &mut self,
+        ui: &mut egui::Ui,
+        sender: Option<&Sender<CommandMessage>>,
+    ) -> (bool, Option<String>) {  // Return both changed status and selected profile
         let mut changed = false;
+        let mut selected_profile = None;
 
         // Profile selector and management UI on a single line
         ui.horizontal(|ui| {
@@ -93,7 +100,7 @@ impl ProfileManager {
                             Some(profile.name.clone()),
                             &profile.name
                         ).clicked() && !was_selected {
-                            // Profile changed, trigger disconnect
+                            selected_profile = Some(profile.name.clone());
                             if let Some(sender) = sender {
                                 sender.send(CommandMessage::Disconnect).ok();
                             }
@@ -120,14 +127,14 @@ impl ProfileManager {
 
                 ui.add_space(4.0);
                 if ui.button("Delete").clicked() {
-                    let selected = self.selected_profile.as_ref().unwrap();
-                    self.profiles.retain(|p| &p.name != selected);
-                    self.selected_profile = None;
-                    // Profile deleted, trigger disconnect
-                    if let Some(sender) = sender {
-                        sender.send(CommandMessage::Disconnect).ok();
+                    if let Some(selected) = self.selected_profile.clone() {
+                        self.profiles.retain(|p| p.name != selected);
+                        selected_profile = Some(String::new()); // Signal profile deletion
+                        if let Some(sender) = sender {
+                            sender.send(CommandMessage::Disconnect).ok();
+                        }
+                        changed = true;
                     }
-                    changed = true;
                 }
             }
         });
@@ -187,11 +194,20 @@ impl ProfileManager {
                 });
         }
 
-        changed
+        (changed, selected_profile)
     }
 
     pub fn set_selected(&mut self, profile: Option<String>) {
         self.selected_profile = profile;
+        
+        // Update path picker when profile changes
+        if let Some(name) = &self.selected_profile {
+            if let Some(profile) = self.profiles.iter().find(|p| &p.name == name) {
+                self.path_picker.set_path(&profile.base_path);
+            }
+        } else {
+            self.path_picker.clear();
+        }
     }
 
     pub fn set_editing(&mut self, profile: Option<Profile>) {
@@ -210,5 +226,9 @@ impl ProfileManager {
     // Method to modify editing_profile since it's private
     pub fn set_editor_profile(&mut self, profile: Option<Profile>) {
         self.editing_profile = profile;
+    }
+
+    pub fn get_first_profile_name(&self) -> Option<String> {
+        self.profiles.first().map(|p| p.name.clone())
     }
 }

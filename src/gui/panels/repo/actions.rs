@@ -18,19 +18,17 @@ pub fn show_action_buttons(
         show_scan_button(ui, state, sender, base_path);
         ui.add_space(8.0);
         show_sync_button(ui, state, sender);
-        ui.add_space(8.0);
-        show_launch_button(ui, state, sender, base_path);
     });
 }
 
-fn show_scan_button(
+pub fn show_scan_button(
     ui: &mut egui::Ui,
     state: &mut RepoPanelState,
     sender: Option<&Sender<CommandMessage>>,
     base_path: &PathBuf,
 ) {
     if ui.button("Scan Mods").clicked() {
-        if !state.is_connected() {
+        if (!state.is_connected()) {
             state.status().set_error("No repository connected");
             return;
         }
@@ -102,13 +100,13 @@ fn show_scan_button(
     }
 }
 
-fn show_sync_button(
+pub fn show_sync_button(
     ui: &mut egui::Ui,
     state: &mut RepoPanelState,
     sender: Option<&Sender<CommandMessage>>,
 ) {
     if ui.button("Sync Mods").clicked() {
-        if !state.is_connected() {
+        if (!state.is_connected()) {
             state.status().set_error("No repository connected");
             return;
         }
@@ -160,25 +158,29 @@ fn show_sync_button(
     }
 }
 
-fn show_launch_button(
+pub fn show_launch_button(
     ui: &mut egui::Ui,
     state: &mut RepoPanelState,
     sender: Option<&Sender<CommandMessage>>,
     base_path: &PathBuf,
 ) {
-    if ui.button("Launch Game").clicked() {
-        if base_path.to_str().unwrap_or("").trim().is_empty() {
-            state.status().set_error("Base path is required");
-            return;
-        }
-        
+    let can_launch = state.has_local_data() && 
+                     !base_path.to_str().unwrap_or("").trim().is_empty();
+
+    let button = ui.add_enabled(
+        can_launch,
+        egui::Button::new(if state.is_offline_mode() {
+            "Launch Game (Offline)"
+        } else {
+            "Launch Game"
+        })
+    );
+
+    if button.clicked() {
         if let Some(sender) = sender {
             sender.send(CommandMessage::LaunchStarted).ok();
             let base_path = base_path.clone();
-            // Get launch parameters from repository if connected
-            let launch_params = state.repository()
-                .map(|repo| repo.client_parameters.clone())
-                .filter(|p| !p.is_empty());
+            let launch_params = state.get_launch_parameters();
             let sender_clone = sender.clone();
             
             std::thread::spawn(move || {
@@ -192,5 +194,15 @@ fn show_launch_button(
                 }
             });
         }
+    }
+
+    if button.hovered() && !can_launch {
+        button.on_hover_ui(|ui| {
+            if base_path.to_str().unwrap_or("").trim().is_empty() {
+                ui.label("Base path is required");
+            } else if !state.has_local_data() {
+                ui.label("No local repository data available. Connect once to download settings.");
+            }
+        });
     }
 }

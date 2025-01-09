@@ -70,4 +70,8 @@ impl PathPicker {
             false
         }
     }
+
+    pub fn clear(&mut self) {
+        self.path = PathBuf::new();
+    }
 }
