@@ -111,7 +111,6 @@ pub fn show_sync_button(
             return;
         }
 
-        // Get all required data before spawning thread
         let profile = match state.profile_manager().get_selected_profile() {
             Some(profile) => profile.clone(),
             None => {
@@ -129,29 +128,52 @@ pub fn show_sync_button(
         if let Some(sender) = sender {
             // Store cancel state before thread spawn
             state.sync_cancel().store(false, Ordering::SeqCst);
-            state.set_scan_results(None);
+            let repo = state.repository().expect("Repository not available").clone();
 
-            let sync_context = crate::commands::sync::SyncContext {
-                cancel: state.sync_cancel().clone(),
-                status_sender: Some(sender.clone()),
-            };
-
-            let repo_url = profile.repo_url;
-            let sender = sender.clone();
-
+            // First do a scan
+            let scan_sender = sender.clone();
+            let repo_url = profile.repo_url.clone();
+            let base_path_scan = base_path.clone();
+            
+            sender.send(CommandMessage::ScanStarted).ok();
+            
             std::thread::spawn(move || {
                 let mut agent = ureq::agent();
-                match crate::commands::sync::sync_with_context(
+                match crate::commands::scan::scan_local_mods(
                     &mut agent,
                     &repo_url,
-                    &base_path,
-                    false,
-                    &sync_context
+                    &base_path_scan,
+                    &repo,
+                    &scan_sender
                 ) {
-                    Ok(()) => sender.send(CommandMessage::SyncComplete),
-                    Err(crate::commands::sync::Error::Cancelled) => sender.send(CommandMessage::SyncCancelled),
-                    Err(e) => sender.send(CommandMessage::SyncError(e.to_string())),
-                }.ok();
+                    Ok(updates) if !updates.is_empty() => {
+                        // If updates needed, start sync
+                        let sync_context = crate::commands::sync::SyncContext {
+                            cancel: Arc::new(AtomicBool::new(false)),
+                            status_sender: Some(scan_sender.clone()),
+                        };
+
+                        match crate::commands::sync::sync_with_context(
+                            &mut agent,
+                            &repo_url,
+                            &base_path_scan,
+                            false,
+                            &sync_context
+                        ) {
+                            Ok(()) => scan_sender.send(CommandMessage::SyncComplete),
+                            Err(crate::commands::sync::Error::Cancelled) => scan_sender.send(CommandMessage::SyncCancelled),
+                            Err(e) => scan_sender.send(CommandMessage::SyncError(e.to_string())),
+                        }.ok();
+                    },
+                    Ok(_) => {
+                        // No updates needed
+                        scan_sender.send(CommandMessage::ScanningStatus("All mods are up to date".into())).ok();
+                        scan_sender.send(CommandMessage::SyncComplete).ok();
+                    },
+                    Err(e) => {
+                        scan_sender.send(CommandMessage::SyncError(e)).ok();
+                    }
+                }
             });
         }
     }

@@ -1,6 +1,6 @@
 use crate::repository::Repository;
-use crate::srf;
 use crate::gui::state::CommandMessage;
+use crate::srf;
 use relative_path::RelativePathBuf;
 use std::path::Path;
 use std::sync::mpsc::Sender;
@@ -37,6 +37,14 @@ fn download_remote_srf(
         .map_err(|e| format!("Failed to parse remote SRF: {}", e))
 }
 
+fn create_file_updates(files: &[srf::File]) -> Vec<FileUpdate> {
+    files.iter().map(|f| FileUpdate {
+        path: f.path.clone(),
+        checksum: f.checksum.clone(),
+        size: f.length,
+    }).collect()
+}
+
 pub fn scan_local_mods(
     agent: &mut ureq::Agent,
     repo_url: &str,
@@ -62,16 +70,9 @@ pub fn scan_local_mods(
         let remote_mod = download_remote_srf(agent, repo_url, &required_mod.mod_name)?;
 
         if (!mod_path.exists()) {
-            // Mod doesn't exist locally, collect all files from remote
-            let files = remote_mod.files.iter().map(|f| FileUpdate {
-                path: f.path.clone(),
-                checksum: f.checksum.clone(),
-                size: f.length,
-            }).collect();
-
             updates_needed.push(ModUpdate {
                 name: required_mod.mod_name.clone(),
-                files,
+                files: create_file_updates(&remote_mod.files),
             });
             continue;
         }
@@ -81,31 +82,17 @@ pub fn scan_local_mods(
             match read_srf_file(&srf_path) {
                 Ok(local_mod) => local_mod,
                 Err(_) => {
-                    // Invalid local SRF, collect all files from remote
-                    let files = remote_mod.files.iter().map(|f| FileUpdate {
-                        path: f.path.clone(),
-                        checksum: f.checksum.clone(),
-                        size: f.length,
-                    }).collect();
-
                     updates_needed.push(ModUpdate {
                         name: required_mod.mod_name.clone(),
-                        files,
+                        files: create_file_updates(&remote_mod.files),
                     });
                     continue;
                 }
             }
         } else {
-            // No local SRF, collect all files from remote
-            let files = remote_mod.files.iter().map(|f| FileUpdate {
-                path: f.path.clone(),
-                checksum: f.checksum.clone(),
-                size: f.length,
-            }).collect();
-
             updates_needed.push(ModUpdate {
                 name: required_mod.mod_name.clone(),
-                files,
+                files: create_file_updates(&remote_mod.files),
             });
             continue;
         };
@@ -114,27 +101,20 @@ pub fn scan_local_mods(
         let mut different_files = Vec::new();
         
         for remote_file in &remote_mod.files {
-            let local_file = local_mod.files.iter().find(|f| f.path == remote_file.path);
-            
-            match local_file {
-                Some(local_file) => {
-                    // Check if file needs updating
-                    if local_file.checksum != remote_file.checksum {
-                        different_files.push(FileUpdate {
-                            path: remote_file.path.clone(),
-                            checksum: remote_file.checksum.clone(),
-                            size: remote_file.length,
-                        });
-                    }
-                }
-                None => {
-                    // File doesn't exist locally
+            if let Some(local_file) = local_mod.files.iter().find(|f| f.path == remote_file.path) {
+                if local_file.checksum != remote_file.checksum {
                     different_files.push(FileUpdate {
                         path: remote_file.path.clone(),
                         checksum: remote_file.checksum.clone(),
                         size: remote_file.length,
                     });
                 }
+            } else {
+                different_files.push(FileUpdate {
+                    path: remote_file.path.clone(),
+                    checksum: remote_file.checksum.clone(),
+                    size: remote_file.length,
+                });
             }
         }
 
@@ -163,47 +143,4 @@ fn read_srf_file(path: &Path) -> Result<srf::Mod, String> {
     } else {
         serde_json::from_reader(reader).map_err(|e| format!("Failed to parse SRF: {}", e))
     }
-}
-
-fn compare_mod_files(
-    repo_url: &str,
-    mod_name: &str,
-    local_mod: &srf::Mod,
-    remote_checksum: String,
-    agent: &mut ureq::Agent,
-) -> Result<Vec<FileUpdate>, String> {
-    let base_url = crate::repository::normalize_repo_url(repo_url);
-    let remote_srf_url = format!("{}{}/mod.srf", base_url, mod_name);
-    
-    let mut different_files = Vec::new();
-
-    // Fetch remote mod.srf
-    let remote_mod: srf::Mod = agent
-        .get(&remote_srf_url)
-        .call()
-        .map_err(|e| format!("Failed to fetch remote SRF: {}", e))?
-        .into_json()
-        .map_err(|e| format!("Failed to parse remote SRF: {}", e))?;
-
-    // Compare files
-    for remote_file in &remote_mod.files {
-        if let Some(local_file) = local_mod.files.iter().find(|f| f.path == remote_file.path) {
-            if local_file.checksum != remote_file.checksum {
-                different_files.push(FileUpdate {
-                    path: remote_file.path.clone(),
-                    checksum: remote_file.checksum.clone(),
-                    size: remote_file.length,
-                });
-            }
-        } else {
-            // File doesn't exist locally
-            different_files.push(FileUpdate {
-                path: remote_file.path.clone(),
-                checksum: remote_file.checksum.clone(),
-                size: remote_file.length,
-            });
-        }
-    }
-
-    Ok(different_files)
 }

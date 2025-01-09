@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::mpsc::Sender;
 
 use super::diff::{self, DownloadCommand};
+use crate::md5_digest::Md5Digest;
 
 #[derive(Snafu, Debug)]
 pub enum Error {
@@ -185,7 +186,6 @@ pub fn sync_with_context(
     dry_run: bool,
     context: &SyncContext,
 ) -> Result<(), Error> {
-    // Check cancel flag at each major step
     let check_cancelled = || {
         if context.cancel.load(Ordering::SeqCst) {
             return Err(Error::Cancelled);
@@ -200,52 +200,30 @@ pub fn sync_with_context(
 
     println!("Starting sync process from {}", repo_url);
     
-    // Get repository info using normalized URL
     let remote_repo = repository::get_repository_info(agent, repo_url)
         .context(RepositoryFetchSnafu)?;
     check_cancelled()?;
 
     println!("Retrieved repository information. Version: {}", remote_repo.version);
 
-    if let Some(sender) = &context.status_sender {
-        sender.send(CommandMessage::ScanningStatus("Scanning local files...".into())).ok();
-    }
-    check_cancelled()?;
+    // Initialize or load mod cache
+    let mut mod_cache = ModCache::from_disk_or_empty(base_path).context(ModCacheOpenSnafu)?;
 
-    // Ensure we scan local files if cache is missing or invalid
-    let mut mod_cache = match ModCache::from_disk_or_empty(base_path).context(ModCacheOpenSnafu) {
-        Ok(cache) => cache,
-        Err(_) => {
-            println!("Cache missing or invalid, scanning local files...");
-            open_cache_or_gen_srf(base_path).context(ModCacheOpenSnafu)?
-        }
-    };
-
-    let check = diff::diff_repo(&mod_cache, &remote_repo);
-    check_cancelled()?;
-
-    println!("Found {} mod(s) that need updating", check.len());
-
-    // remove all mods to check from cache, we'll read them later
-    for r#mod in &check {
-        mod_cache.remove(&r#mod.checksum);
-    }
-
+    // Convert scan results into download commands
     let mut download_commands = vec![];
     let mut failed_mods = Vec::new();
 
-    for r#mod in &check {
-        println!("Checking mod: {}", r#mod.mod_name);
-        // Use normalized base URL for diffing
+    for r#mod in &remote_repo.required_mods {
         match diff::diff_mod(agent, repo_url, base_path, r#mod).context(DiffSnafu) {
             Ok(commands) => {
-                println!("  - Found {} file(s) to update", commands.len());
-                download_commands.extend(commands);
+                if !commands.is_empty() {
+                    println!("Mod {} needs {} file(s) updated", r#mod.mod_name, commands.len());
+                    download_commands.extend(commands);
+                }
             },
             Err(e) => {
                 eprintln!("Error diffing mod {}: {}", r#mod.mod_name, e);
                 failed_mods.push(r#mod.mod_name.clone());
-                continue;
             }
         }
     }
@@ -257,17 +235,21 @@ pub fn sync_with_context(
         return Ok(());
     }
 
-    // Use normalized URL for downloads
+    // Execute downloads and update cache
     let res = execute_command_list(agent, repo_url, base_path, &download_commands, context);
 
     match res {
         Ok(()) => {
             println!("Downloads completed successfully");
             
-            let check_refs: Vec<&repository::Mod> = check.iter().copied().collect();
-            update_mod_cache(base_path, &check_refs, &mut mod_cache)?;
+            // Update mod cache for changed mods
+            let changed_mods: Vec<&repository::Mod> = remote_repo.required_mods.iter()
+                .filter(|m| failed_mods.iter().all(|f| f != &m.mod_name))
+                .collect();
+            
+            update_mod_cache(base_path, &changed_mods, &mut mod_cache)?;
 
-            // Update the mod_cache with remote repository info
+            // Update repository info in cache
             mod_cache.repository = Some(remote_repo.clone());
             mod_cache.last_sync = Some(chrono::Utc::now());
             mod_cache.to_disk(base_path).context(ModCacheOpenSnafu)?;
