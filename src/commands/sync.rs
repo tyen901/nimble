@@ -175,7 +175,8 @@ pub fn sync(
     dry_run: bool,
 ) -> Result<(), Error> {
     let context = SyncContext::default();
-    sync_with_context(agent, repo_url, base_path, dry_run, &context)
+    let force_sync = false;  // Default to non-forced sync for backward compatibility
+    sync_with_context(agent, repo_url, base_path, dry_run, force_sync, &context)
 }
 
 pub fn sync_with_context(
@@ -183,6 +184,7 @@ pub fn sync_with_context(
     repo_url: &str,
     base_path: &Path,
     dry_run: bool,
+    force_sync: bool,  // Add this parameter
     context: &SyncContext,
 ) -> Result<(), Error> {
     // Check cancel flag at each major step
@@ -237,7 +239,7 @@ pub fn sync_with_context(
     for r#mod in &check {
         println!("Checking mod: {}", r#mod.mod_name);
         // Use normalized base URL for diffing
-        match diff::diff_mod(agent, repo_url, base_path, r#mod).context(DiffSnafu) {
+        match diff::diff_mod(agent, repo_url, base_path, r#mod, force_sync).context(DiffSnafu) {
             Ok(commands) => {
                 println!("  - Found {} file(s) to update", commands.len());
                 download_commands.extend(commands);

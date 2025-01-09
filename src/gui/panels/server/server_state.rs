@@ -456,7 +456,7 @@ impl ServerState {
         
         std::thread::spawn(move || {
             let mut agent = ureq::agent();
-            match crate::commands::sync::sync_with_context(&mut agent, &repo_url, &base_path, false, &context) {
+            match crate::commands::sync::sync_with_context(&mut agent, &repo_url, &base_path, false,false, &context) {
                 Ok(()) => sender.send(CommandMessage::SyncComplete),
                 Err(crate::commands::sync::Error::Cancelled) => sender.send(CommandMessage::SyncCancelled),
                 Err(e) => sender.send(CommandMessage::SyncError(e.to_string())),

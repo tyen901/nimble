@@ -1,11 +1,16 @@
-
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use crate::gui::state::CommandMessage;
 
-pub fn start_sync_with_context(base_path: PathBuf, repo_url: &str, sync_cancel: Arc<AtomicBool>, sender: Sender<CommandMessage>) {
+pub fn start_sync_with_context(
+    base_path: PathBuf,
+    repo_url: &str,
+    sync_cancel: Arc<AtomicBool>,
+    sender: Sender<CommandMessage>,
+    force_sync: bool,
+) {
     let repo_url = repo_url.to_string();
     let context = crate::commands::sync::SyncContext {
         cancel: sync_cancel,
@@ -14,7 +19,8 @@ pub fn start_sync_with_context(base_path: PathBuf, repo_url: &str, sync_cancel: 
     
     std::thread::spawn(move || {
         let mut agent = ureq::agent();
-        match crate::commands::sync::sync_with_context(&mut agent, &repo_url, &base_path, false, &context) {
+        let dry_run = false;  // Make it explicit
+        match crate::commands::sync::sync_with_context(&mut agent, &repo_url, &base_path, dry_run, force_sync, &context) {
             Ok(()) => sender.send(CommandMessage::SyncComplete),
             Err(crate::commands::sync::Error::Cancelled) => sender.send(CommandMessage::SyncCancelled),
             Err(e) => sender.send(CommandMessage::SyncError(e.to_string())),

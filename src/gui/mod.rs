@@ -6,7 +6,6 @@ pub mod config;
 use eframe::egui;
 use egui::ViewportBuilder;
 use crate::gui::panels::{create_repo::CreateRepoPanel, server::ServerPanel};
-use crate::gui::panels::gen_srf::GenSrfPanel;
 use crate::gui::state::{GuiState, GuiConfig, CommandMessage, CommandChannels};
 
 #[derive(Default)]
@@ -14,7 +13,6 @@ pub struct NimbleGui {
     config: GuiConfig,
     state: GuiState,
     server_panel: ServerPanel,
-    gen_srf_panel: GenSrfPanel,
     create_repo_panel: CreateRepoPanel,
     channels: CommandChannels,
     selected_tab: Tab,
@@ -24,7 +22,6 @@ pub struct NimbleGui {
 pub enum Tab {
     #[default]
     Server,
-    GenSrf,
     CreateRepo,
 }
 
@@ -37,7 +34,6 @@ impl NimbleGui {
             config: config.clone(),
             server_panel,
             state: GuiState::default(),
-            gen_srf_panel: GenSrfPanel::default(),
             create_repo_panel: CreateRepoPanel::from_config(&config),
             channels: CommandChannels::default(),
             selected_tab: Tab::default(),
@@ -64,7 +60,6 @@ impl eframe::App for NimbleGui {
                 ui.heading("Nimble");
                 ui.separator();
                 ui.selectable_value(&mut self.selected_tab, Tab::Server, "Server");
-                ui.selectable_value(&mut self.selected_tab, Tab::GenSrf, "Generate SRF");
                 ui.selectable_value(&mut self.selected_tab, Tab::CreateRepo, "Create Repo");
             });
         });
@@ -72,7 +67,6 @@ impl eframe::App for NimbleGui {
         egui::CentralPanel::default().show(ctx, |ui| {
             match self.selected_tab {
                 Tab::Server => self.server_panel.show(ui, &self.state, Some(&self.channels.sender)),
-                Tab::GenSrf => self.gen_srf_panel.show(ui, Some(&self.channels.sender), &self.state),
                 Tab::CreateRepo => self.create_repo_panel.show(ui),
             }
             
@@ -126,21 +120,6 @@ impl eframe::App for NimbleGui {
                     }
                     CommandMessage::LaunchError(error) => {
                         println!("Launch error: {}", error);
-                        self.state = GuiState::Idle;
-                    }
-                    CommandMessage::GenSrfProgress { current_mod, progress, processed, total } => {
-                        self.state = GuiState::GeneratingSRF {
-                            progress,
-                            current_mod,
-                            mods_processed: processed,
-                            total_mods: total,
-                        };
-                    }
-                    CommandMessage::GenSrfComplete => {
-                        self.state = GuiState::Idle;
-                    }
-                    CommandMessage::GenSrfError(error) => {
-                        println!("GenSRF error: {}", error);
                         self.state = GuiState::Idle;
                     }
                     CommandMessage::Disconnect => {

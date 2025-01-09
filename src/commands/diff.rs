@@ -1,5 +1,5 @@
 use crate::{md5_digest::Md5Digest, mod_cache::ModCache, repository, srf};
-use md5::{Md5, Digest};  // Change to use md5 instead of sha1
+use md5::{Md5, Digest};
 use snafu::{ResultExt, Snafu};
 use std::collections::HashMap;
 use std::fs::File;
@@ -66,7 +66,9 @@ pub fn diff_mod(
     repo_base_path: &str,
     local_base_path: &Path,
     remote_mod: &repository::Mod,
+    force_sync: bool,  // Add this parameter
 ) -> Result<Vec<DownloadCommand>, Error> {
+    // Get remote SRF first
     let remote_srf_url = repository::make_repo_file_url(
         repo_base_path,
         &format!("{}/mod.srf", remote_mod.mod_name)
@@ -93,40 +95,45 @@ pub fn diff_mod(
     };
 
     let local_path = local_base_path.join(Path::new(&format!("{}/", remote_mod.mod_name)));
-    let srf_path = local_path.join(Path::new("mod.srf"));
 
-    let local_srf = {
+    // For force sync, we directly scan the directory instead of using SRF cache
+    let local_srf = if force_sync {
+        println!("Force sync requested for {}, scanning directory...", remote_mod.mod_name);
         if local_path.exists() {
-            let file = File::open(&srf_path);
-
-            match file {
-                Ok(file) => {
-                    let mut reader = BufReader::new(file);
-                    let srf_result = if srf::is_legacy_srf(&mut reader).context(IoSnafu)? {
-                        srf::deserialize_legacy_srf(&mut reader)
-                            .context(LegacySrfDeserializationSnafu)
-                    } else {
-                        serde_json::from_reader(&mut reader).context(SrfDeserializationSnafu)
-                    };
-
-                    match srf_result {
-                        Ok(srf) => srf,
-                        Err(_) => {
-                            // If SRF is invalid, rescan the directory
-                            println!("Invalid SRF file found for {}, rescanning...", remote_mod.mod_name);
-                            srf::scan_mod(&local_path).context(SrfGenerationSnafu)?
-                        }
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    println!("No SRF file found for {}, scanning directory...", remote_mod.mod_name);
-                    srf::scan_mod(&local_path).context(SrfGenerationSnafu)?
-                }
-                Err(e) => return Err(Error::Io { source: e }),
-            }
+            srf::scan_mod(&local_path).context(SrfGenerationSnafu)?
         } else {
             srf::Mod::generate_invalid(&remote_srf)
         }
+    } else if local_path.exists() {
+        let srf_path = local_path.join(Path::new("mod.srf"));
+        let file = File::open(&srf_path);
+        match file {
+            Ok(file) => {
+                let mut reader = BufReader::new(file);
+                let srf_result = if srf::is_legacy_srf(&mut reader).context(IoSnafu)? {
+                    srf::deserialize_legacy_srf(&mut reader)
+                        .context(LegacySrfDeserializationSnafu)
+                } else {
+                    serde_json::from_reader(&mut reader).context(SrfDeserializationSnafu)
+                };
+
+                match srf_result {
+                    Ok(srf) => srf,
+                    Err(_) => {
+                        // If SRF is invalid, rescan the directory
+                        println!("Invalid SRF file found for {}, rescanning...", remote_mod.mod_name);
+                        srf::scan_mod(&local_path).context(SrfGenerationSnafu)?
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                println!("No SRF file found for {}, scanning directory...", remote_mod.mod_name);
+                srf::scan_mod(&local_path).context(SrfGenerationSnafu)?
+            }
+            Err(e) => return Err(Error::Io { source: e }),
+        }
+    } else {
+        srf::Mod::generate_invalid(&remote_srf)
     };
 
     // Add debug logging
@@ -262,8 +269,9 @@ fn remove_leftover_files<'a>(
     pbo_only: bool,
 ) -> Result<(), std::io::Error> {
     for file in files {
-        // Skip non-PBO files if pbo_only is true
+        // Don't skip non-PBO files during force sync
         if pbo_only && !file.path.to_string().to_lowercase().ends_with(".pbo") {
+            println!("Skipping non-PBO file {} (not in force sync mode)", file.path);
             continue;
         }
 
