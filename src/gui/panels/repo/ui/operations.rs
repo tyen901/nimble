@@ -32,12 +32,6 @@ impl OperationsView {
                 if state.is_busy() {
                     ui.add_space(4.0);
                     match state.operation_state {
-                        OperationState::Scanning => {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label("Scanning for updates...");
-                            });
-                        },
                         OperationState::Syncing => {
                             ui.horizontal(|ui| {
                                 ui.spinner();
@@ -55,24 +49,28 @@ impl OperationsView {
                 }
             });
 
-            // Show any scanning results
+            // Show sync results
             if let Some(results) = &state.scan_results {
                 ui.add_space(8.0);
                 ui.group(|ui| {
-                    ui.heading("Scan Results");
-                    for update in results {
-                        ui.horizontal(|ui| {
-                            ui.label("•");
-                            ui.label(&update.name);
-                            ui.label(format!(
-                                "({})",
-                                if update.files.len() > 1 {
-                                    format!("{} files", update.files.len())
-                                } else {
-                                    "1 file".to_string()
-                                }
-                            ));
-                        });
+                    ui.heading("Sync Results");
+                    if results.is_empty() {
+                        ui.label("✅ Local repository is up to date");
+                    } else {
+                        for update in results {
+                            ui.horizontal(|ui| {
+                                ui.label("•");
+                                ui.label(&update.name);
+                                ui.label(format!(
+                                    "({})",
+                                    if update.files.len() > 1 {
+                                        format!("{} files", update.files.len())
+                                    } else {
+                                        "1 file".to_string()
+                                    }
+                                ));
+                            });
+                        }
                     }
                 });
             }

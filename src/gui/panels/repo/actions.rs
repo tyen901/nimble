@@ -14,91 +14,10 @@ pub fn show_action_buttons(
     sender: Option<&Sender<CommandMessage>>,
     base_path: &PathBuf,
 ) {
-    ui.horizontal(|ui| {
-        show_scan_button(ui, state, sender, base_path);
-        ui.add_space(8.0);
-        show_sync_button(ui, state, sender);
-    });
+    show_sync_button(ui, state, sender);
 }
 
-pub fn show_scan_button(
-    ui: &mut egui::Ui,
-    state: &mut RepoPanelState,
-    sender: Option<&Sender<CommandMessage>>,
-    base_path: &PathBuf,
-) {
-    if ui.button("Scan Mods").clicked() {
-        if (!state.is_connected()) {
-            state.status().set_error("No repository connected");
-            return;
-        }
-        
-        if base_path.to_str().unwrap_or("").trim().is_empty() {
-            state.status().set_error("Base path is required");
-            return;
-        }
-
-        // Get all required data before spawning thread
-        let repo = match state.repository() {
-            Some(repo) => repo.clone(),
-            None => {
-                state.status().set_error("Repository not available");
-                return;
-            }
-        };
-
-        let profile = match state.profile_manager().get_selected_profile() {
-            Some(profile) => profile.clone(),
-            None => {
-                state.status().set_error("No profile selected");
-                return;
-            }
-        };
-
-        if let Some(sender) = sender {
-            let repo_url = profile.repo_url.clone();
-            let base_path = base_path.clone();
-            let sender_clone = sender.clone();
-            
-            sender.send(CommandMessage::ScanStarted).ok();
-            
-            std::thread::spawn(move || {
-                let mut agent = ureq::agent();
-                match crate::commands::scan::scan_local_mods(
-                    &mut agent,
-                    &repo_url,
-                    &base_path,
-                    &repo,
-                    &sender_clone
-                ) {
-                    Ok(updates) => {
-                        let total_files: usize = updates.iter()
-                            .map(|m| m.files.len().max(1))
-                            .sum();
-                        
-                        if updates.is_empty() {
-                            sender_clone.send(CommandMessage::ScanningStatus(
-                                "All mods are up to date".into()
-                            )).ok();
-                        } else {
-                            let msg = format!(
-                                "Found {} mod(s) that need updating ({} files)",
-                                updates.len(),
-                                total_files
-                            );
-                            sender_clone.send(CommandMessage::ScanningStatus(msg)).ok();
-                        }
-                        std::thread::sleep(std::time::Duration::from_secs(2));
-                        sender_clone.send(CommandMessage::ScanComplete(updates)).ok();
-                    }
-                    Err(e) => {
-                        sender_clone.send(CommandMessage::SyncError(e)).ok();
-                    }
-                }
-            });
-        }
-    }
-}
+// Remove show_scan_button function entirely
 
 pub fn show_sync_button(
     ui: &mut egui::Ui,
@@ -125,55 +44,31 @@ pub fn show_sync_button(
             return;
         }
 
-        if let Some(sender) = sender {
-            // Store cancel state before thread spawn
+        if let Some(sender) = sender.cloned() {
             state.sync_cancel().store(false, Ordering::SeqCst);
             let repo = state.repository().expect("Repository not available").clone();
-
-            // First do a scan
-            let scan_sender = sender.clone();
             let repo_url = profile.repo_url.clone();
-            let base_path_scan = base_path.clone();
             
-            sender.send(CommandMessage::ScanStarted).ok();
+            sender.send(CommandMessage::SyncStarted).ok();
             
             std::thread::spawn(move || {
                 let mut agent = ureq::agent();
-                match crate::commands::scan::scan_local_mods(
+                let sync_context = crate::commands::sync::SyncContext {
+                    cancel: Arc::new(AtomicBool::new(false)),
+                    status_sender: Some(sender.clone()),
+                };
+
+                match crate::commands::sync::sync_with_context(
                     &mut agent,
                     &repo_url,
-                    &base_path_scan,
-                    &repo,
-                    &scan_sender
+                    &base_path,
+                    false,
+                    &sync_context
                 ) {
-                    Ok(updates) if !updates.is_empty() => {
-                        // If updates needed, start sync
-                        let sync_context = crate::commands::sync::SyncContext {
-                            cancel: Arc::new(AtomicBool::new(false)),
-                            status_sender: Some(scan_sender.clone()),
-                        };
-
-                        match crate::commands::sync::sync_with_context(
-                            &mut agent,
-                            &repo_url,
-                            &base_path_scan,
-                            false,
-                            &sync_context
-                        ) {
-                            Ok(()) => scan_sender.send(CommandMessage::SyncComplete),
-                            Err(crate::commands::sync::Error::Cancelled) => scan_sender.send(CommandMessage::SyncCancelled),
-                            Err(e) => scan_sender.send(CommandMessage::SyncError(e.to_string())),
-                        }.ok();
-                    },
-                    Ok(_) => {
-                        // No updates needed
-                        scan_sender.send(CommandMessage::ScanningStatus("All mods are up to date".into())).ok();
-                        scan_sender.send(CommandMessage::SyncComplete).ok();
-                    },
-                    Err(e) => {
-                        scan_sender.send(CommandMessage::SyncError(e)).ok();
-                    }
-                }
+                    Ok(()) => sender.send(CommandMessage::SyncComplete),
+                    Err(crate::commands::sync::Error::Cancelled) => sender.send(CommandMessage::SyncCancelled),
+                    Err(e) => sender.send(CommandMessage::SyncError(e.to_string())),
+                }.ok();
             });
         }
     }

@@ -24,7 +24,6 @@ pub enum CacheState {
 #[derive(PartialEq)]
 pub enum OperationState {
     Idle,
-    Scanning,
     Syncing,
     Launching,
 }
@@ -201,7 +200,7 @@ impl RepoPanelState {
     }
 
     pub fn set_scanning(&mut self) {
-        self.operation_state = OperationState::Scanning;
+        // Remove this method or leave as no-op if needed for compatibility
     }
 
     pub fn set_syncing(&mut self) {
@@ -221,7 +220,8 @@ impl RepoPanelState {
     }
 
     pub fn can_scan(&self) -> bool {
-        self.is_connected() && !self.is_busy()
+        // Remove this method or return false if needed for compatibility
+        false
     }
 
     pub fn can_sync(&self) -> bool {
