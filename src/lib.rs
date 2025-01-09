@@ -109,7 +109,7 @@ pub fn run(args: Args) -> Result<(), NimbleError> {
             commands::gen_srf::gen_srf(&path, output.as_deref(), None)?;
         }
         Commands::Launch { path } => {
-            commands::launch::launch(&path)?;
+            commands::launch::launch(&path, None)?;
         }
     }
     Ok(())

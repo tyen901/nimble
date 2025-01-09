@@ -153,10 +153,17 @@ fn show_launch_button(
         if let Some(sender) = sender {
             sender.send(CommandMessage::LaunchStarted).ok();
             let base_path = base_path.clone();
+            // Get launch parameters from repository if connected
+            let launch_params = state.repository()
+                .map(|repo| repo.client_parameters.clone())
+                .filter(|p| !p.is_empty());
             let sender_clone = sender.clone();
             
             std::thread::spawn(move || {
-                if let Err(e) = crate::commands::launch::launch(&base_path) {
+                if let Err(e) = crate::commands::launch::launch(
+                    &base_path,
+                    launch_params.as_deref()
+                ) {
                     sender_clone.send(CommandMessage::LaunchError(e.to_string())).ok();
                 } else {
                     sender_clone.send(CommandMessage::LaunchComplete).ok();

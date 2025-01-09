@@ -17,18 +17,32 @@ pub enum Error {
     FailedToFindDriveC,
 }
 
-fn generate_mod_args(base_path: &Path, mod_cache: &ModCache) -> String {
-    mod_cache
+fn generate_mod_args(base_path: &Path, mod_cache: &ModCache, launch_params: Option<&str>) -> String {
+    // Start with basic arguments and any launch parameters
+    let mut args = if let Some(params) = launch_params {
+        format!("-noLauncher {}", params.trim())
+    } else {
+        "-noLauncher".to_string()
+    };
+
+    // Add mod paths in the original format
+    let mod_paths = mod_cache
         .mods
         .values()
-        .fold(String::from("-noLauncher -mod="), |acc, r#mod| {
-            let mod_name = &r#mod.name;
+        .fold(String::new(), |acc, r#mod| {
             let full_path = base_path
-                .join(Path::new(mod_name))
+                .join(Path::new(&r#mod.name))
                 .to_string_lossy()
-                .to_string();
-            format!("{acc}{full_path};")
-        })
+                .to_string()
+                .replace('\\', "/");
+            format!("{}{};", acc, full_path)
+        });
+
+    if !mod_paths.is_empty() {
+        format!("{} -mod={}", args, mod_paths)
+    } else {
+        args
+    }
 }
 
 // if we're on windows we don't have to do anything
@@ -52,21 +66,38 @@ fn convert_host_base_path_to_proton_base_path(host_base_path: &Path) -> Result<P
     Ok(Path::new("c:/").join(relative))
 }
 
-pub fn launch(base_path: &Path) -> Result<(), Error> {
-    let mod_cache = open_cache_or_gen_srf(base_path).context(ModCacheOpenSnafu)?;
+const SAFE_CHARACTERS: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'/')
+    .remove(b';')
+    .remove(b'@')
+    .remove(b'_')
+    .remove(b'-')
+    .remove(b'.');
 
+// Update the character set to be more permissive - only encode what Steam requires
+const STEAM_URL_ENCODE: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS
+    .add(b' ')  // Space must be %20
+    .add(b'"')  // Quotes must be encoded
+    .add(b'%')  // Percent must be encoded
+    .add(b'<')  // Less than must be encoded
+    .add(b'>')  // Greater than must be encoded
+    .add(b'\\') // Backslash must be encoded
+    .add(b'^')  // Caret must be encoded
+    .add(b'`')  // Backtick must be encoded
+    .add(b'{')  // Braces must be encoded
+    .add(b'|'); // Pipe must be encoded
+
+pub fn launch(base_path: &Path, launch_params: Option<&str>) -> Result<(), Error> {
+    let mod_cache = open_cache_or_gen_srf(base_path).context(ModCacheOpenSnafu)?;
     let proton_base_path = convert_host_base_path_to_proton_base_path(base_path)?;
 
-    let binding = generate_mod_args(&proton_base_path, &mod_cache);
-    let cmdline =
-        percent_encoding::utf8_percent_encode(&binding, percent_encoding::NON_ALPHANUMERIC);
+    let binding = generate_mod_args(&proton_base_path, &mod_cache, launch_params);
+    let cmdline = percent_encoding::utf8_percent_encode(&binding, percent_encoding::NON_ALPHANUMERIC);
 
-    let steam_url = format!("steam://run/107410//{cmdline}/");
+    let steam_url = format!("steam://run/107410//{}/", cmdline);
 
     dbg!(&steam_url);
-
     open::that(steam_url).unwrap();
-
     Ok(())
 }
 
