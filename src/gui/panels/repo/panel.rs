@@ -109,6 +109,24 @@ impl RepoPanel {
             CommandMessage::Disconnect => {
                 self.state.disconnect();
             },
+            CommandMessage::ScanStarted => {
+                self.state.set_scanning();
+            },
+            CommandMessage::ScanComplete(_) => {
+                self.state.set_idle();
+            },
+            CommandMessage::SyncStarted => {
+                self.state.set_syncing();
+            },
+            CommandMessage::SyncComplete => {
+                self.state.set_idle();
+            },
+            CommandMessage::LaunchStarted => {
+                self.state.set_launching();
+            },
+            CommandMessage::LaunchComplete => {
+                self.state.set_idle();
+            },
             _ => {}
         }
     }

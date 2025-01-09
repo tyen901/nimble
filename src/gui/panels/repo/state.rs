@@ -21,6 +21,14 @@ pub enum CacheState {
     NeedsSync,
 }
 
+#[derive(PartialEq)]
+pub enum OperationState {
+    Idle,
+    Scanning,
+    Syncing,
+    Launching,
+}
+
 pub struct RepoPanelState {
     pub(crate) status: StatusDisplay,
     pub(crate) repository: Option<Repository>,
@@ -32,6 +40,7 @@ pub struct RepoPanelState {
     pub(crate) cache_state: CacheState,
     pub(crate) local_repository: Option<Repository>,  // From cache
     pub(crate) remote_repository: Option<Repository>, // From server
+    pub(crate) operation_state: OperationState,
 }
 
 impl Default for RepoPanelState {
@@ -47,6 +56,7 @@ impl Default for RepoPanelState {
             cache_state: CacheState::NoCache,
             local_repository: None,
             remote_repository: None,
+            operation_state: OperationState::Idle,
         }
     }
 }
@@ -189,5 +199,37 @@ impl RepoPanelState {
         self.local_repository = None;
         self.cache_state = CacheState::NoCache;
         self.is_offline_mode = false;
+    }
+
+    pub fn set_scanning(&mut self) {
+        self.operation_state = OperationState::Scanning;
+    }
+
+    pub fn set_syncing(&mut self) {
+        self.operation_state = OperationState::Syncing;
+    }
+
+    pub fn set_launching(&mut self) {
+        self.operation_state = OperationState::Launching;
+    }
+
+    pub fn set_idle(&mut self) {
+        self.operation_state = OperationState::Idle;
+    }
+
+    pub fn is_busy(&self) -> bool {
+        self.operation_state != OperationState::Idle
+    }
+
+    pub fn can_scan(&self) -> bool {
+        self.is_connected() && !self.is_busy()
+    }
+
+    pub fn can_sync(&self) -> bool {
+        self.is_connected() && !self.is_busy()
+    }
+
+    pub fn can_launch(&self) -> bool {
+        self.has_local_data() && !self.is_busy()
     }
 }

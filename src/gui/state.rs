@@ -22,6 +22,8 @@ pub enum CommandMessage {
     Disconnect,
     ScanningStatus(String),
     ScanStarted,
+    ScanComplete(Vec<crate::commands::scan::ModUpdate>),
+    SyncStarted,
 }
 
 pub struct CommandChannels {

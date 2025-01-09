@@ -86,7 +86,10 @@ impl eframe::App for NimbleGui {
                         };
                         ctx.request_repaint();
                     }
-                    CommandMessage::LaunchStarted => self.state = GuiState::Launching,
+                    CommandMessage::LaunchStarted => {
+                        self.state = GuiState::Launching;
+                        self.repo_panel.handle_command(&msg);
+                    },
                     CommandMessage::ScanningStatus(message) => {
                         self.state = GuiState::Scanning { message };
                         ctx.request_repaint();
@@ -96,11 +99,24 @@ impl eframe::App for NimbleGui {
                             message: "Scanning local folder...".into() 
                         };
                     }
+                    CommandMessage::ScanComplete(ref results) => {
+                        self.state = GuiState::Idle;
+                        self.repo_panel.handle_command(&msg);
+                    },
+                    CommandMessage::SyncStarted => {
+                        self.repo_panel.handle_command(&msg);
+                    },
+                    CommandMessage::SyncComplete => {
+                        self.state = GuiState::Idle;
+                        self.repo_panel.handle_command(&msg);
+                    },
+                    CommandMessage::LaunchComplete => {
+                        self.state = GuiState::Idle;
+                        self.repo_panel.handle_command(&msg);
+                    },
                     // All these states just return to Idle
-                    CommandMessage::SyncComplete |
                     CommandMessage::SyncError(_) |
                     CommandMessage::SyncCancelled |
-                    CommandMessage::LaunchComplete |
                     CommandMessage::LaunchError(_) => self.state = GuiState::Idle,
                     // These are handled by the repo panel
                     CommandMessage::ConnectionStarted |

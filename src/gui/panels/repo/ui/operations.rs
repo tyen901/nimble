@@ -1,6 +1,6 @@
 use eframe::egui;
 use crate::gui::state::{GuiState, CommandMessage};
-use super::super::state::RepoPanelState;
+use super::super::state::{RepoPanelState, OperationState};  // Add OperationState
 use super::super::actions;
 use std::sync::mpsc::Sender;
 use std::path::PathBuf;
@@ -22,8 +22,38 @@ impl OperationsView {
 
             ui.add_space(8.0);
 
-            // Operation buttons
-            actions::show_action_buttons(ui, state, sender, &base_path);
+            ui.group(|ui| {
+                ui.heading("Operations");
+                ui.add_enabled_ui(!state.is_busy(), |ui| {
+                    actions::show_action_buttons(ui, state, sender, &base_path);
+                });
+
+                // Show operation status if busy
+                if state.is_busy() {
+                    ui.add_space(4.0);
+                    match state.operation_state {
+                        OperationState::Scanning => {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label("Scanning for updates...");
+                            });
+                        },
+                        OperationState::Syncing => {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label("Syncing repository...");
+                            });
+                        },
+                        OperationState::Launching => {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label("Launching game...");
+                            });
+                        },
+                        _ => {}
+                    }
+                }
+            });
 
             // Show any scanning results
             if let Some(results) = &state.scan_results {
