@@ -5,14 +5,14 @@ pub mod config;
 
 use eframe::egui;
 use egui::ViewportBuilder;
-use crate::gui::panels::{create_repo::CreateRepoPanel, server::ServerPanel};
+use crate::gui::panels::{create_repo::CreateRepoPanel, repo::RepoPanel};
 use crate::gui::state::{GuiState, GuiConfig, CommandMessage, CommandChannels};
 
 #[derive(Default)]
 pub struct NimbleGui {
     config: GuiConfig,
     state: GuiState,
-    server_panel: ServerPanel,
+    repo_panel: RepoPanel,
     create_repo_panel: CreateRepoPanel,
     channels: CommandChannels,
     selected_tab: Tab,
@@ -28,13 +28,12 @@ pub enum Tab {
 impl NimbleGui {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let config = GuiConfig::load();
-        let server_panel = ServerPanel::from_config(&config);
         
         Self {
             config: config.clone(),
-            server_panel,
             state: GuiState::default(),
-            create_repo_panel: CreateRepoPanel::from_config(&config),
+            repo_panel: RepoPanel::from_config(&config),
+            create_repo_panel: CreateRepoPanel::default(),
             channels: CommandChannels::default(),
             selected_tab: Tab::default(),
         }
@@ -43,9 +42,7 @@ impl NimbleGui {
 
 impl eframe::App for NimbleGui {
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {
-        // Update config from panels before saving
-        self.server_panel.save_to_config(&mut self.config);
-        
+        self.repo_panel.save_to_config(&mut self.config);
         if let Err(e) = self.config.save() {
             eprintln!("Failed to save config: {}", e);
         }
@@ -66,29 +63,19 @@ impl eframe::App for NimbleGui {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             match self.selected_tab {
-                Tab::Server => self.server_panel.show(ui, &self.state, Some(&self.channels.sender)),
+                Tab::Server => self.repo_panel.show(ui, &self.state, Some(&self.channels.sender)),
                 Tab::CreateRepo => self.create_repo_panel.show(ui),
             }
             
             while let Ok(msg) = self.channels.receiver.try_recv() {
+                // First let the repo panel handle its own state
+                self.repo_panel.handle_command(&msg);
+
+                // Then handle global state changes
                 match msg {
                     CommandMessage::ConfigChanged => {
-                        // Update config when panels report changes
-                        self.server_panel.save_to_config(&mut self.config);
-                        if let Err(e) = self.config.save() {
-                            eprintln!("Failed to save config: {}", e);
-                        }
-                    }
-                    CommandMessage::ConnectionStarted => {
-                        self.state = GuiState::Connecting;
-                    }
-                    CommandMessage::ConnectionComplete(repo) => {
-                        self.server_panel.set_repository(repo);
-                        self.state = GuiState::Idle;
-                    }
-                    CommandMessage::ConnectionError(error) => {
-                        println!("Connection error: {}", error);
-                        self.state = GuiState::Idle;
+                        self.repo_panel.save_to_config(&mut self.config);
+                        self.config.save().unwrap_or_else(|e| eprintln!("Failed to save config: {}", e));
                     }
                     CommandMessage::SyncProgress { file, progress, processed, total } => {
                         self.state = GuiState::Syncing {
@@ -97,42 +84,30 @@ impl eframe::App for NimbleGui {
                             files_processed: processed,
                             total_files: total,
                         };
-                        ctx.request_repaint();  // Add this line to force UI update
+                        ctx.request_repaint();
                     }
-                    CommandMessage::SyncComplete => {
-                        self.state = GuiState::Idle;
-                    }
-                    CommandMessage::SyncError(error) => {
-                        println!("Sync error: {}", error);
-                        self.state = GuiState::Idle;
-                    }
-                    CommandMessage::SyncCancelled => {
-                        self.state = GuiState::Idle;
-                    },
-                    CommandMessage::CancelSync => {
-                        // State will be updated when SyncCancelled is received
-                    },
-                    CommandMessage::LaunchStarted => {
-                        self.state = GuiState::Launching;
-                    }
-                    CommandMessage::LaunchComplete => {
-                        self.state = GuiState::Idle;
-                    }
-                    CommandMessage::LaunchError(error) => {
-                        println!("Launch error: {}", error);
-                        self.state = GuiState::Idle;
-                    }
-                    CommandMessage::Disconnect => {
-                        self.server_panel.handle_command(&msg);
-                        self.state = GuiState::Idle;
-                    }
+                    CommandMessage::LaunchStarted => self.state = GuiState::Launching,
                     CommandMessage::ScanningStatus(message) => {
                         self.state = GuiState::Scanning { message };
                         ctx.request_repaint();
                     }
                     CommandMessage::ScanStarted => {
-                        self.state = GuiState::Scanning { message: "Scanning local folder...".into() };
+                        self.state = GuiState::Scanning { 
+                            message: "Scanning local folder...".into() 
+                        };
                     }
+                    // All these states just return to Idle
+                    CommandMessage::SyncComplete |
+                    CommandMessage::SyncError(_) |
+                    CommandMessage::SyncCancelled |
+                    CommandMessage::LaunchComplete |
+                    CommandMessage::LaunchError(_) => self.state = GuiState::Idle,
+                    // These are handled by the repo panel
+                    CommandMessage::ConnectionStarted |
+                    CommandMessage::ConnectionComplete(_) |
+                    CommandMessage::ConnectionError(_) |
+                    CommandMessage::Disconnect |
+                    CommandMessage::CancelSync => {}
                 }
             }
         });

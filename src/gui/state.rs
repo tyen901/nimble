@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use eframe::egui;
 use crate::repository::Repository;
+use crate::gui::panels::repo::Profile;
 
 #[derive(Debug)]
 pub enum CommandMessage {
@@ -45,7 +46,6 @@ impl Default for CommandChannels {
 pub enum GuiState {
     #[default]
     Idle,
-    Connecting,
     Syncing { 
         progress: f32,
         current_file: String,
@@ -53,22 +53,9 @@ pub enum GuiState {
         total_files: usize,
     },
     Launching,
-    GeneratingSRF { 
-        progress: f32,
-        current_mod: String,
-        mods_processed: usize,
-        total_mods: usize,
-    },
     Scanning {
         message: String,
     },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Profile {
-    pub name: String,
-    pub repo_url: String,
-    pub base_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,9 +65,9 @@ pub struct GuiConfig {
     #[serde(default = "default_window_size")]
     window_size: (f32, f32),
     #[serde(default)]
-    pub profiles: Vec<Profile>,
+    profiles: Vec<Profile>,
     #[serde(default)]
-    pub selected_profile: Option<String>,
+    selected_profile: Option<String>,
 }
 
 fn default_version() -> u32 {
@@ -102,12 +89,22 @@ impl Default for GuiConfig {
     }
 }
 
-impl Default for Profile {
-    fn default() -> Self {
-        Self {
-            name: "Default".to_string(),
-            repo_url: String::new(),
-            base_path: PathBuf::new(),
+// Add custom error type
+#[derive(Debug)]
+pub enum ConfigError {
+    IoError(std::io::Error),
+    ParseError(serde_json::Error),
+    VersionError(String),
+    ValidationError(String),
+}
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::IoError(e) => write!(f, "IO error: {}", e),
+            Self::ParseError(e) => write!(f, "Parse error: {}", e),
+            Self::VersionError(e) => write!(f, "Version error: {}", e),
+            Self::ValidationError(e) => write!(f, "Validation error: {}", e),
         }
     }
 }
@@ -115,7 +112,6 @@ impl Default for Profile {
 impl GuiConfig {
     pub const CURRENT_VERSION: u32 = 1;
 
-    // Add version accessor methods
     pub fn version(&self) -> u32 {
         self.version
     }
@@ -128,23 +124,12 @@ impl GuiConfig {
         super::config::load_config().unwrap_or_default()
     }
 
-    pub fn save(&self) -> Result<(), String> {
+    pub fn save(&self) -> Result<(), ConfigError> {
         super::config::save_config(self)
+            .map_err(|e| ConfigError::ValidationError(e))
     }
 
-    // Modify validate to only check non-version requirements
     pub fn validate(&self) -> Result<(), String> {
-        if let Some(profile) = self.get_selected_profile() {
-            if !profile.base_path.exists() {
-                return Err("Base path does not exist".into());
-            }
-            if !profile.base_path.is_dir() {
-                return Err("Base path is not a directory".into());
-            }
-            if profile.repo_url.is_empty() {
-                return Err("Repository URL is required".into());
-            }
-        }
         Ok(())
     }
 
@@ -156,22 +141,25 @@ impl GuiConfig {
         self.window_size = (size.x, size.y);
     }
 
-    pub fn add_profile(&mut self, profile: Profile) {
-        self.profiles.push(profile);
+    pub fn get_profiles(&self) -> &Vec<Profile> {
+        &self.profiles
     }
 
-    pub fn remove_profile(&mut self, name: &str) {
-        self.profiles.retain(|p| p.name != name);
-        if self.selected_profile.as_deref() == Some(name) {
-            self.selected_profile = None;
-        }
+    pub fn get_selected_profile_name(&self) -> &Option<String> {
+        &self.selected_profile
     }
 
-    pub fn get_profile(&self, name: &str) -> Option<&Profile> {
-        self.profiles.iter().find(|p| p.name == name)
+    pub fn set_profiles(&mut self, profiles: Vec<Profile>) {
+        self.profiles = profiles;
+    }
+
+    pub fn set_selected_profile(&mut self, profile: Option<String>) {
+        self.selected_profile = profile;
     }
 
     pub fn get_selected_profile(&self) -> Option<&Profile> {
-        self.selected_profile.as_ref().and_then(|name| self.get_profile(name))
+        self.selected_profile
+            .as_ref()
+            .and_then(|name| self.profiles.iter().find(|p| &p.name == name))
     }
 }
