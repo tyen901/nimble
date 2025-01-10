@@ -1,0 +1,97 @@
+PROJECT ORGANIZATION AND TRACKING
+
+CURRENT PHASE (P1) - CODEBASE CONSOLIDATION:
+
+[~] Module Structure Reorganization
+- [x] Added tokio dependency 
+- [x] Moved fs.rs to util/fs.rs
+- [x] Implemented FileSystemOps without async-trait
+- [x] Added proper unit tests
+- [ ] Migrate existing code to new traits
+
+CRITICAL DUPLICATION ISSUES:
+
+1. File System Operations [P0]
+- [x] Define FileSystemOps trait
+- [x] Create basic implementation
+- [x] Add async operations with Pin<Box<Future>>
+- [x] Add progress tracking with FnMut
+- [x] Add checksumming support
+- [ ] Migrate:
+  * gui/panels/create_repo/scanner.rs
+  * sync/operations/scan.rs
+  * repository/utils.rs
+  * sync/operations/launch.rs
+
+2. Progress Tracking [P1]
+- [x] Define ProgressTracker trait
+- [x] Implement DefaultProgressTracker
+- [x] Add async interface
+- [x] Add unit tests
+- [ ] GUI Integration:
+  * Connect to widgets
+  * Add operation status
+  * Implement progress reporting
+
+3. State Management [P1]
+- [ ] Unify state handling:
+  * sync/core/state.rs
+  * gui/state.rs
+  * gui/panels/*/state.rs
+- [ ] Create StateManager trait
+- [ ] Add atomic state transitions
+- [ ] Implement thread safety
+
+4. Repository Management [P2]
+- [ ] Unify operations:
+  * repository/mod.rs
+  * mod_cache.rs
+  * gui/panels/create_repo/scanner.rs
+- [ ] Create RepositoryManager trait
+- [ ] Add validation logic
+
+NEXT IMMEDIATE TASKS:
+
+1. Scanner.rs Migration [P0]
+- [ ] Update to use FileSystemOps
+- [ ] Add async runtime handling
+- [ ] Implement progress reporting
+- [ ] Add error mapping
+
+2. Operation Updates [P1]
+- [ ] Update sync.rs to use new traits
+- [ ] Convert download operations
+- [ ] Add progress integration
+- [ ] Update error handling
+
+3. Testing Coverage [P1]
+- [ ] Add more fs.rs tests
+- [ ] Test async operations
+- [ ] Test error conditions
+- [ ] Test progress callbacks
+
+MODULE STRUCTURE:
+
+/src/
+  /util/              - Core utilities and traits
+    fs.rs            - FileSystem operations
+    progress.rs      - Progress tracking
+    state.rs         - State management
+  
+  /core/             - Core business logic
+    repository.rs    - Repository management
+    operation.rs     - Operation traits
+  
+  /gui/              - GUI components
+  /sync/             - Sync operations
+
+BLOCKERS:
+- Complete scanner.rs migration first
+- Ensure proper async error handling
+- Verify thread safety in callbacks
+
+NOTES:
+- Using Pin<Box<dyn Future>> instead of async-trait
+- Progress callbacks now use FnMut
+- Need to carefully handle async runtime in GUI
+- Consider adding debug logging
