@@ -2,7 +2,7 @@ use crate::commands::gen_srf::{gen_srf_for_mod, open_cache_or_gen_srf};
 use crate::gui::state::CommandMessage;
 use crate::mod_cache::ModCache;
 use crate::{repository, srf};
-use indicatif::{ProgressBar, ProgressState, ProgressStyle};
+use indicatif::{ProgressBar, ProgressState, ProgressStyle, MultiProgress};
 use snafu::{ResultExt, Snafu};
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
@@ -97,7 +97,7 @@ fn download_file(
 fn update_mod_cache(base_path: &Path, mods: &[&repository::Mod], mod_cache: &mut ModCache) -> Result<(), Error> {
     println!("Generating SRF files for downloaded mods...");
     for r#mod in mods {
-        println!("  - Generating SRF for {}", r#mod.mod_name);
+        println!("Generating SRF for {}", r#mod.mod_name);
         let srf = gen_srf_for_mod(&base_path.join(Path::new(&r#mod.mod_name)), None);
         mod_cache.insert(srf);
     }
@@ -112,38 +112,54 @@ fn execute_command_list(
     agent: &mut ureq::Agent,
     remote_base: &str,
     local_base: &Path,
-    commands: &[DownloadCommand],
+    commands: Vec<DownloadCommand>,
     context: &SyncContext,
 ) -> Result<(), Error> {
-    for (i, command) in commands.iter().enumerate() {
+    let multi = MultiProgress::new();
+    let total = commands.len();
+    let overall_bar = multi.add(ProgressBar::new(total as u64));
+    overall_bar.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} files ({eta})")
+            .unwrap()
+    );
+
+    for (i, command) in commands.into_iter().enumerate() {
         if context.cancel.load(Ordering::SeqCst) {
             return Err(Error::Cancelled);
         }
 
-        println!("downloading {} of {} - {}", i, commands.len(), command.file);
+        println!("downloading {} of {} - {}", i, total, command.file);
 
         if let Some(sender) = &context.status_sender {
             sender.send(CommandMessage::SyncProgress {
                 file: command.file.clone(),
                 progress: 0.0,
                 processed: i,
-                total: commands.len(),
+                total: total,
             }).ok();
         }
 
         let mut temp_download_file = tempfile().context(IoSnafu)?;
         let remote_url = repository::make_repo_file_url(remote_base, &command.file);
         
-        let pb: ProgressBar = create_progress_bar(0);
+        let file_bar = multi.add(ProgressBar::new(0));
+        file_bar.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+                .unwrap()
+        );
+        file_bar.set_message(command.file.clone());
+
         let sender = context.status_sender.clone();
         let file_name = command.file.clone();
         let current_index = i;
-        let total_files = commands.len();
+        let total_files = total;
 
-        let pb_ref = pb.clone(); // Clone the progress bar for the closure
+        let file_bar_ref = file_bar.clone(); // Clone the progress bar for the closure
 
         let total_size = download_file(agent, &remote_url, &mut temp_download_file, context, move |downloaded, total| {
-            pb_ref.set_position(downloaded);
+            file_bar_ref.set_position(downloaded);
             if let Some(sender) = &sender {
                 sender.send(CommandMessage::SyncProgress {
                     file: file_name.clone(),
@@ -154,7 +170,8 @@ fn execute_command_list(
             }
         })?;
 
-        pb.finish_and_clear();
+        file_bar.finish_and_clear();
+        overall_bar.inc(1);
 
         // Write to permanent file
         let file_path = local_base.join(Path::new(&command.file));
@@ -166,6 +183,7 @@ fn execute_command_list(
         std::io::copy(&mut temp_download_file, &mut local_file).context(IoSnafu)?;
     }
 
+    overall_bar.finish_with_message("All files downloaded");
     Ok(())
 }
 
@@ -249,7 +267,7 @@ pub fn sync_with_context(
     }
 
     // Execute downloads and update cache
-    let res = execute_command_list(agent, repo_url, base_path, &download_commands, context);
+    let res = execute_command_list(agent, repo_url, base_path, download_commands, context);
 
     match res {
         Ok(()) => {

@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::{BufReader, Cursor, Read};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DownloadCommand {
     pub file: String,
     pub begin: u64,

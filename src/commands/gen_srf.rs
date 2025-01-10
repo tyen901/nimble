@@ -9,6 +9,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use walkdir::WalkDir;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 pub fn gen_srf_for_mod(mod_path: &Path, output_dir: Option<&Path>) -> srf::Mod {
     let generated_srf = srf::scan_mod(mod_path).unwrap();
@@ -50,7 +51,16 @@ pub fn gen_srf(
     output_dir: Option<&Path>,
     progress_callback: Option<Box<dyn Fn(String, f32, usize, usize) + Send + Sync>>
 ) -> Result<(), mod_cache::Error> {
-    let progress_fn = progress_callback.unwrap_or_else(|| Box::new(|_, _, _, _| {}));
+    let multi = MultiProgress::new();
+    let overall_progress = multi.add(ProgressBar::new_spinner());
+    overall_progress.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.green} {msg}")
+            .unwrap()
+    );
+    overall_progress.set_message("Scanning for mods...");
+
+    let progress_fn = Arc::new(progress_callback.unwrap_or_else(|| Box::new(|_, _, _, _| {})));
     let mod_dirs: Vec<_> = WalkDir::new(base_path)
         .min_depth(1)
         .max_depth(1)
@@ -60,22 +70,40 @@ pub fn gen_srf(
         .collect();
 
     let total_mods = mod_dirs.len();
+    overall_progress.set_message(format!("Found {} mods to process", total_mods));
+    let overall_bar = Arc::new(multi.add(ProgressBar::new(total_mods as u64)));
+    overall_bar.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} mods ({eta})")
+            .unwrap()
+    );
+
     let processed_count = Arc::new(AtomicUsize::new(0));
 
     let mods: HashMap<Md5Digest, srf::Mod> = mod_dirs
         .into_par_iter()
-        .map(|entry| {
-            let path = entry.path();
-            let mod_name = path.file_name().unwrap().to_string_lossy().to_string();
-            let srf = gen_srf_for_mod(path, output_dir);
+        .map({
+            let progress_fn = Arc::clone(&progress_fn);
+            let overall_bar = Arc::clone(&overall_bar);
+            move |entry| {
+                let path = entry.path();
+                let mod_name = path.file_name().unwrap().to_string_lossy().to_string();
+                let srf = gen_srf_for_mod(path, output_dir);
+                
+                overall_bar.inc(1);
+                overall_bar.set_message(format!("Processed {}", mod_name));
 
-            let processed = processed_count.fetch_add(1, Ordering::SeqCst) + 1;
-            let progress = processed as f32 / total_mods as f32;
-            progress_fn(mod_name, progress, processed, total_mods);
+                // Call progress callback with cloned reference
+                let processed = overall_bar.position() as usize;
+                progress_fn(mod_name, processed as f32 / total_mods as f32, processed, total_mods);
 
-            (srf.checksum.clone(), srf)
+                (srf.checksum.clone(), srf)
+            }
         })
         .collect();
+
+    overall_bar.finish_with_message("All mods processed");
+    overall_progress.finish_with_message("Saving cache...");
 
     let cache = ModCache::new(mods)?;
     progress_fn("Saving cache".to_string(), 1.0, total_mods, total_mods);

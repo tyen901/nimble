@@ -5,6 +5,7 @@ use relative_path::RelativePathBuf;
 use std::path::Path;
 use std::sync::mpsc::Sender;
 use std::{fs, io};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 #[derive(Debug, Clone)]
 pub struct ModUpdate {
@@ -51,8 +52,27 @@ pub fn scan_local_mods(
     base_path: &Path,
     repository: &Repository,
     status_sender: &Sender<CommandMessage>,
-    force_sync: bool,  // Add force_sync parameter
+    force_sync: bool,
 ) -> Result<Vec<ModUpdate>, String> {
+    let required_mods = repository.required_mods.clone();
+    let total_mods = required_mods.len();
+    
+    let multi = MultiProgress::new();
+    let overall_progress = multi.add(ProgressBar::new_spinner());
+    overall_progress.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.green} {prefix:.bold.dim} {msg}")
+            .unwrap()
+    );
+    overall_progress.set_prefix("Scanning:");
+
+    let scan_bar = multi.add(ProgressBar::new(total_mods as u64));
+    scan_bar.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} mods")
+            .unwrap()
+    );
+
     let mut updates_needed = Vec::new();
     let temp_dir = base_path.join(TEMP_FOLDER);
     
@@ -62,10 +82,14 @@ pub fn scan_local_mods(
             .map_err(|e| format!("Failed to create temp directory: {}", e))?;
     }
 
-    for required_mod in &repository.required_mods {
-        status_sender.send(CommandMessage::ScanningStatus(
-            format!("Scanning {}", required_mod.mod_name)
-        )).ok();
+    for required_mod in required_mods {
+        let mod_name = required_mod.mod_name.clone();
+        let status_message = format!("Scanning {}", mod_name);
+        
+        overall_progress.set_message(mod_name.clone());
+        scan_bar.set_message(status_message.clone());
+        
+        status_sender.send(CommandMessage::ScanningStatus(status_message)).ok();
 
         let mod_path = base_path.join(&required_mod.mod_name);
         let remote_mod = download_remote_srf(agent, repo_url, &required_mod.mod_name)?;
@@ -76,6 +100,7 @@ pub fn scan_local_mods(
                 name: required_mod.mod_name.clone(),
                 files: create_file_updates(&remote_mod.files),
             });
+            scan_bar.inc(1);
             continue;
         }
 
@@ -88,6 +113,7 @@ pub fn scan_local_mods(
                         name: required_mod.mod_name.clone(),
                         files: create_file_updates(&remote_mod.files),
                     });
+                    scan_bar.inc(1);
                     continue;
                 }
             }
@@ -96,6 +122,7 @@ pub fn scan_local_mods(
                 name: required_mod.mod_name.clone(),
                 files: create_file_updates(&remote_mod.files),
             });
+            scan_bar.inc(1);
             continue;
         };
 
@@ -126,7 +153,12 @@ pub fn scan_local_mods(
                 files: different_files,
             });
         }
+
+        scan_bar.inc(1);
     }
+
+    scan_bar.finish_with_message("Scan complete");
+    overall_progress.finish_with_message(format!("Found {} mods needing updates", updates_needed.len()));
 
     // Cleanup temp directory
     if temp_dir.exists() {
