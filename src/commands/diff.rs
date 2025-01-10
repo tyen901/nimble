@@ -1,4 +1,5 @@
 use crate::{md5_digest::Md5Digest, mod_cache::ModCache, repository, srf};
+use super::types::{DownloadCommand, DeleteCommand};
 use md5::{Md5, Digest};
 use snafu::{ResultExt, Snafu};
 use std::collections::HashMap;
@@ -7,10 +8,9 @@ use std::io::{BufReader, Cursor, Read};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
-pub struct DownloadCommand {
-    pub file: String,
-    pub begin: u64,
-    pub end: u64,
+pub enum QuickDiffResult {
+    UpToDate,
+    NeedsFull,
 }
 
 #[derive(Snafu, Debug)]
@@ -61,81 +61,92 @@ fn verify_file_exists(base_path: &Path, relative_path: &str) -> bool {
     full_path.exists()
 }
 
-pub fn diff_mod(
-    agent: &ureq::Agent,
-    repo_base_path: &str,
+pub fn quick_diff(
     local_base_path: &Path,
     remote_mod: &repository::Mod,
-    force_scan: bool,
-) -> Result<Vec<DownloadCommand>, Error> {
-    // Get remote SRF first
-    let remote_srf_url = repository::make_repo_file_url(
-        repo_base_path,
-        &format!("{}/mod.srf", remote_mod.mod_name)
-    );
-    let mut remote_srf = agent
-        .get(&remote_srf_url)
-        .call()
-        .context(HttpSnafu {
-            url: remote_srf_url,
-        })?
-        .into_reader();
+    remote_srf: &srf::Mod,
+) -> Result<QuickDiffResult, Error> {
+    let local_path = local_base_path.join(Path::new(&format!("{}/", remote_mod.mod_name)));
+    let srf_path = local_path.join("mod.srf");
 
-    let mut buf = String::new();
-    let _len = remote_srf.read_to_string(&mut buf).context(IoSnafu)?;
+    if !srf_path.exists() {
+        println!("No local SRF found for {}, needs full check", remote_mod.mod_name);
+        return Ok(QuickDiffResult::NeedsFull);
+    }
 
-    let bomless = buf.trim_start_matches('\u{feff}');
-    let remote_is_legacy = srf::is_legacy_srf(&mut Cursor::new(bomless)).context(IoSnafu)?;
-
-    let remote_srf: srf::Mod = if remote_is_legacy {
-        srf::deserialize_legacy_srf(&mut BufReader::new(Cursor::new(bomless)))
-            .context(LegacySrfDeserializationSnafu)?
-    } else {
-        serde_json::from_str(bomless).context(SrfDeserializationSnafu)?
+    let local_srf = {
+        let file = File::open(&srf_path).context(IoSnafu)?;
+        let mut reader = BufReader::new(file);
+        if srf::is_legacy_srf(&mut reader).context(IoSnafu)? {
+            srf::deserialize_legacy_srf(&mut reader).context(LegacySrfDeserializationSnafu)?
+        } else {
+            serde_json::from_reader(&mut reader).context(SrfDeserializationSnafu)?
+        }
     };
 
+    println!("Quick comparing mod {} (local: {}, remote: {})", 
+        remote_mod.mod_name,
+        local_srf.checksum,
+        remote_srf.checksum
+    );
+
+    if local_srf.checksum == remote_srf.checksum 
+        && local_srf.files.len() == remote_srf.files.len() 
+        && local_path.exists() {
+        println!("Quick check passed for {}", remote_mod.mod_name);
+        Ok(QuickDiffResult::UpToDate)
+    } else {
+        // If we got partial SRF data that was enough to determine checksums don't match,
+        // we need the full SRF to do proper diffing
+        println!("Quick check detected changes for {}, needs full check", remote_mod.mod_name);
+        Ok(QuickDiffResult::NeedsFull)
+    }
+}
+
+pub fn diff_mod(
+    local_base_path: &Path,
+    remote_mod: &repository::Mod,
+    remote_srf: &srf::Mod,
+    force_scan: bool,
+) -> Result<(Vec<DownloadCommand>, Vec<DeleteCommand>), Error> { 
     let local_path = local_base_path.join(Path::new(&format!("{}/", remote_mod.mod_name)));
+    let srf_path = local_path.join("mod.srf");
 
     // If force scan, delete the local SRF file first
-    if force_scan {
+    if force_scan && srf_path.exists() {
         println!("Force scanning directory for {}...", remote_mod.mod_name);
-        let srf_path = local_path.join("mod.srf");
-        if srf_path.exists() {
-            if let Err(e) = std::fs::remove_file(&srf_path) {
-                eprintln!("Warning: Failed to delete SRF file: {}", e);
-            }
+        if let Err(e) = std::fs::remove_file(&srf_path) {
+            eprintln!("Warning: Failed to delete SRF file: {}", e);
         }
     }
 
-    let local_srf = if !local_path.exists() {
-        srf::Mod::generate_invalid(&remote_srf)
-    } else {
-        let srf_path = local_path.join(Path::new("mod.srf"));
-        let file = File::open(&srf_path);
-        match file {
-            Ok(file) => {
-                let mut reader = BufReader::new(file);
-                let srf_result = if srf::is_legacy_srf(&mut reader).context(IoSnafu)? {
-                    srf::deserialize_legacy_srf(&mut reader)
-                        .context(LegacySrfDeserializationSnafu)
-                } else {
-                    serde_json::from_reader(&mut reader).context(SrfDeserializationSnafu)
-                };
+    // Ensure the mod directory exists
+    if !local_path.exists() {
+        std::fs::create_dir_all(&local_path).context(IoSnafu)?;
+    }
 
-                match srf_result {
-                    Ok(srf) => srf,
-                    Err(_) => {
-                        // If SRF is invalid, rescan the directory
-                        println!("Invalid SRF file found for {}, rescanning...", remote_mod.mod_name);
-                        srf::scan_mod(&local_path).context(SrfGenerationSnafu)?
-                    }
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                println!("No SRF file found for {}, scanning directory...", remote_mod.mod_name);
-                srf::scan_mod(&local_path).context(SrfGenerationSnafu)?
-            }
-            Err(e) => return Err(Error::Io { source: e }),
+    // Generate SRF file if it doesn't exist or force_scan was used
+    if !srf_path.exists() {
+        println!("No SRF file found for {}, generating initial SRF...", remote_mod.mod_name);
+        let initial_srf = if local_path.exists() {
+            srf::scan_mod(&local_path).context(SrfGenerationSnafu)?
+        } else {
+            srf::Mod::generate_invalid(&remote_srf)
+        };
+        
+        // Write the initial SRF file
+        let file = File::create(&srf_path).context(IoSnafu)?;
+        serde_json::to_writer(file, &initial_srf).context(SrfDeserializationSnafu)?;
+    }
+
+    // Now read the local SRF file (which we know exists)
+    let local_srf = {
+        let file = File::open(&srf_path).context(IoSnafu)?;
+        let mut reader = BufReader::new(file);
+        if srf::is_legacy_srf(&mut reader).context(IoSnafu)? {
+            srf::deserialize_legacy_srf(&mut reader).context(LegacySrfDeserializationSnafu)?
+        } else {
+            serde_json::from_reader(&mut reader).context(SrfDeserializationSnafu)?
         }
     };
 
@@ -154,7 +165,7 @@ pub fn diff_mod(
         && local_srf.files.len() == remote_srf.files.len() 
         && local_path.exists() {
         println!("Skipping mod {} - checksums match", remote_mod.mod_name);
-        return Ok(vec![]);
+        return Ok((vec![], vec![]));
     }
     else {
         println!("Checksums don't match, comparing files...");
@@ -258,29 +269,14 @@ pub fn diff_mod(
         }
     }
 
-    // Only remove leftover files if they're PBOs or don't exist
-    remove_leftover_files(local_base_path, &remote_srf, local_files.into_values())
-        .context(IoSnafu)?;
-
-    Ok(download_list)
-}
-
-fn remove_leftover_files<'a>(
-    local_base_path: &Path,
-    r#mod: &srf::Mod,
-    files: impl Iterator<Item = &'a srf::File>,
-) -> Result<(), std::io::Error> {
-    for file in files {
-        let path = local_base_path.join(&r#mod.name).join(file.path.to_string());
-
-        println!("removing leftover file {}", &path.display());
-
-        if path.exists() {
-            if let Err(e) = std::fs::remove_file(&path) {
-                eprintln!("Warning: Failed to remove file {}: {}", path.display(), e);
-            }
-        }
+    let mut delete_list = Vec::new();
+    
+    // Add leftover files to delete list
+    for (path, _) in local_files {
+        delete_list.push(DeleteCommand {
+            file: path.as_str().to_string(),
+        });
     }
 
-    Ok(())
+    Ok((download_list, delete_list))
 }

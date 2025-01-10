@@ -5,14 +5,15 @@ use crate::{repository, srf};
 use indicatif::{ProgressBar, ProgressState, ProgressStyle, MultiProgress};
 use snafu::{ResultExt, Snafu};
 use std::fs::File;
-use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write, Cursor, BufReader};
 use std::path::Path;
 use tempfile::tempfile;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
 
-use super::diff::{self, DownloadCommand};
+use super::diff::{self};
+use super::types::{DownloadCommand, DeleteCommand};  // Use shared types
 use crate::md5_digest::Md5Digest;
 
 #[derive(Snafu, Debug)]
@@ -35,6 +36,16 @@ pub enum Error {
     Cancelled,
     #[snafu(display("Failed to serialize cache: {}", source))]
     CacheSerialization { source: serde_json::Error },
+    #[snafu(display("Failed to deserialize SRF: {}", source))]
+    SrfDeserialization { source: srf::Error },
+    #[snafu(display("Failed to serialize data: {}", source))]
+    Serialization { source: serde_json::Error },
+}
+
+impl From<diff::Error> for Error {
+    fn from(err: diff::Error) -> Self {
+        Error::Diff { source: err }
+    }
 }
 
 pub struct SyncContext {
@@ -95,10 +106,25 @@ fn download_file(
 }
 
 fn update_mod_cache(base_path: &Path, mods: &[&repository::Mod], mod_cache: &mut ModCache) -> Result<(), Error> {
-    println!("Generating SRF files for downloaded mods...");
+    println!("Generating SRF files for updated mods...");
     for r#mod in mods {
+        // Only generate SRF for mods that were changed
+        let mod_path = base_path.join(&r#mod.mod_name);
+        let srf_path = mod_path.join("mod.srf");
+        
+        // Skip if SRF exists and is valid
+        if srf_path.exists() {
+            if let Ok(file) = std::fs::File::open(&srf_path) {
+                if let Ok(existing_srf) = serde_json::from_reader(file) {
+                    println!("Skipping SRF generation for unchanged mod {}", r#mod.mod_name);
+                    mod_cache.insert(existing_srf);
+                    continue;
+                }
+            }
+        }
+
         println!("Generating SRF for {}", r#mod.mod_name);
-        let srf = gen_srf_for_mod(&base_path.join(Path::new(&r#mod.mod_name)), None);
+        let srf = gen_srf_for_mod(&mod_path, None);
         mod_cache.insert(srf);
     }
 
@@ -187,6 +213,133 @@ fn execute_command_list(
     Ok(())
 }
 
+fn download_srf_part(
+    agent: &ureq::Agent, 
+    url: &str,
+    range: Option<(u64, u64)>
+) -> Result<String, Error> {
+    let mut request = agent.get(url);
+    
+    if let Some((start, end)) = range {
+        request = request.set("Range", &format!("bytes={}-{}", start, end));
+    }
+
+    let mut response = request.call().context(HttpSnafu { url: url.to_string() })?;
+    let mut buf = String::new();
+    response.into_reader().read_to_string(&mut buf).context(IoSnafu)?;
+    Ok(buf)
+}
+
+struct DownloadedSrf {
+    mod_name: String,
+    srf_data: srf::Mod,
+}
+
+fn download_remote_srf(
+    agent: &ureq::Agent,
+    repo_url: &str,
+    mod_name: &str,
+    partial: bool,
+) -> Result<(srf::Mod, bool), Error> {
+    let remote_srf_url = repository::make_repo_file_url(
+        repo_url,
+        &format!("{}/mod.srf", mod_name)
+    );
+
+    // For partial sync, just get first 512 bytes to check checksum
+    // Otherwise download the entire file
+    let buf = if !partial {
+        download_srf_part(agent, &remote_srf_url, Some((0, 511)))?
+    } else {
+        download_srf_part(agent, &remote_srf_url, None)?
+    };
+
+    let bomless = buf.trim_start_matches('\u{feff}');
+    let remote_is_legacy = srf::is_legacy_srf(&mut Cursor::new(bomless)).context(IoSnafu)?;
+
+    let partial_result = if remote_is_legacy {
+        srf::deserialize_legacy_srf(&mut BufReader::new(Cursor::new(bomless)))
+            .context(SrfDeserializationSnafu)
+    } else {
+        serde_json::from_str(bomless).context(SerializationSnafu)
+    };
+
+    // If parsing failed due to truncated data and we're not in force mode, 
+    // download the full file and try again
+    match partial_result {
+        Ok(srf) => Ok((srf, !partial)),
+        Err(_) if !partial => {
+            // Retry with full file download
+            let full_buf = download_srf_part(agent, &remote_srf_url, None)?;
+            let bomless = full_buf.trim_start_matches('\u{feff}');
+
+            if remote_is_legacy {
+                srf::deserialize_legacy_srf(&mut BufReader::new(Cursor::new(bomless)))
+                    .context(SrfDeserializationSnafu)
+                    .map(|srf| (srf, false))
+            } else {
+                serde_json::from_str(bomless).context(SerializationSnafu).map(|srf| (srf, false))
+            }
+        },
+        Err(e) => Err(e),
+    }
+}
+
+fn remove_leftover_files(
+    base_path: &Path,
+    mod_name: &str,
+    delete_commands: Vec<DeleteCommand>
+) -> Result<(), Error> {
+    for cmd in delete_commands {
+        let path = base_path.join(mod_name).join(cmd.file);
+        println!("Removing leftover file {}", &path.display());
+
+        if path.exists() {
+            if let Err(e) = std::fs::remove_file(&path) {
+                eprintln!("Warning: Failed to remove file {}: {}", path.display(), e);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn process_mod_diff(
+    agent: &ureq::Agent,
+    repo_url: &str,
+    base_path: &Path,
+    r#mod: &repository::Mod,
+    remote_srf: srf::Mod,
+    force_sync: bool,
+) -> Result<(Vec<DownloadCommand>, Option<DownloadedSrf>), Error> {
+    let (downloads, deletes) = diff::diff_mod(base_path, r#mod, &remote_srf, force_sync)?;
+    
+    // Handle file deletions first
+    remove_leftover_files(base_path, &r#mod.mod_name, deletes)?;
+
+    if !downloads.is_empty() {
+        println!("Mod {} needs {} file(s) updated", r#mod.mod_name, downloads.len());
+        Ok((downloads, Some(DownloadedSrf {
+            mod_name: r#mod.mod_name.clone(),
+            srf_data: remote_srf,
+        })))
+    } else {
+        Ok((vec![], None))
+    }
+}
+
+fn save_srf_files(base_path: &Path, downloaded_srfs: &[DownloadedSrf]) -> Result<(), Error> {
+    for srf in downloaded_srfs {
+        let mod_path = base_path.join(&srf.mod_name);
+        let srf_path = mod_path.join("mod.srf");
+        
+        std::fs::create_dir_all(&mod_path).context(IoSnafu)?;
+        let file = File::create(&srf_path).context(IoSnafu)?;
+        serde_json::to_writer(file, &srf.srf_data).context(SerializationSnafu)?;
+        println!("Saved updated SRF for {}", srf.mod_name);
+    }
+    Ok(())
+}
+
 pub fn sync(
     agent: &mut ureq::Agent,
     repo_url: &str,
@@ -242,19 +395,42 @@ pub fn sync_with_context(
 
     // Convert scan results into download commands
     let mut download_commands = vec![];
-    let mut failed_mods = Vec::new();
+    let mut failed_mods: Vec<String> = Vec::new();
+    let mut downloaded_srfs = Vec::new();
 
     for r#mod in &remote_repo.required_mods {
-        match diff::diff_mod(agent, repo_url, base_path, r#mod, force_sync).context(DiffSnafu) {
-            Ok(commands) => {
-                if !commands.is_empty() {
-                    println!("Mod {} needs {} file(s) updated", r#mod.mod_name, commands.len());
-                    download_commands.extend(commands);
+        let mut needs_full_diff = force_sync;
+        let mut diff_result = None;
+        let mut remote_srf = None;
+
+        if !force_sync {
+            let (srf, partial) = download_remote_srf(agent, repo_url, &r#mod.mod_name, false)?;
+
+            match diff::quick_diff(base_path, r#mod, &srf)? {
+                diff::QuickDiffResult::UpToDate => continue,
+                diff::QuickDiffResult::NeedsFull => {
+                    needs_full_diff = true;
+                },
+            }
+        }
+
+        if needs_full_diff {
+            let (full_srf, _) = download_remote_srf(agent, repo_url, &r#mod.mod_name, true)?;
+            remote_srf = Some(full_srf.clone());  // Always store full SRF
+            diff_result = Some(process_mod_diff(agent, repo_url, base_path, r#mod, full_srf, force_sync)?);
+        }
+
+        // Handle any diff results
+        if let Some((downloads, _)) = diff_result {
+            if !downloads.is_empty() {
+                download_commands.extend(downloads);
+                // Only store SRF if we have a full version
+                if let Some(srf) = remote_srf {
+                    downloaded_srfs.push(DownloadedSrf {
+                        mod_name: r#mod.mod_name.clone(),
+                        srf_data: srf,
+                    });
                 }
-            },
-            Err(e) => {
-                eprintln!("Error diffing mod {}: {}", r#mod.mod_name, e);
-                failed_mods.push(r#mod.mod_name.clone());
             }
         }
     }
@@ -271,14 +447,10 @@ pub fn sync_with_context(
 
     match res {
         Ok(()) => {
-            println!("Downloads completed successfully");
+            println!("Downloads completed");
             
-            // Update mod cache for changed mods
-            let changed_mods: Vec<&repository::Mod> = remote_repo.required_mods.iter()
-                .filter(|m| failed_mods.iter().all(|f| f != &m.mod_name))
-                .collect();
-            
-            update_mod_cache(base_path, &changed_mods, &mut mod_cache)?;
+            // Save updated SRF files
+            save_srf_files(base_path, &downloaded_srfs)?;
             
             // Update repository info in cache
             mod_cache.repository = Some(remote_repo.clone());
