@@ -14,15 +14,26 @@ impl ConnectionStatusView {
         });
     }
 
-    fn show_status_indicator(ui: &mut egui::Ui, state: &RepoPanelState) {
+    fn show_status_indicator(ui: &mut egui::Ui, state: &RepoPanelState) -> egui::Response {
         match state.connection_state() {
             ConnectionState::Connected => ui.label("🟢 Connected"),
             ConnectionState::Connecting => {
-                let resp = ui.spinner();
-                ui.label("Connecting...");
-                resp
+                let response = ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Connecting...");
+                });
+                response.response
             },
-            ConnectionState::Error(_) => ui.label("❌ Not Connected"),
+            ConnectionState::Error(error) => {
+                ui.vertical(|ui| {
+                    ui.label("❌ Connection Error");
+                    ui.label(
+                        egui::RichText::new(error)
+                            .color(egui::Color32::from_rgb(220, 120, 120))
+                            .small()
+                    );
+                }).response
+            },
             ConnectionState::Disconnected => {
                 if state.is_offline_mode() {
                     ui.label("📴 Offline Mode")
@@ -30,7 +41,7 @@ impl ConnectionStatusView {
                     ui.label("❌ Not Connected")
                 }
             },
-        };
+        }
     }
 
     fn show_connection_button(ui: &mut egui::Ui, state: &mut RepoPanelState, sender: Option<&Sender<CommandMessage>>) {
