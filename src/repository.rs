@@ -42,7 +42,7 @@ where
 #[serde(rename_all = "camelCase")] // this particular file is camelcase for reasons
 pub struct Mod {
     pub mod_name: String,
-    #[serde(rename = "checkSum")] // why
+    #[serde(rename = "checkSum")]  // Fix: match the JSON field which uses capital S
     pub checksum: Md5Digest,
     pub enabled: bool,
 }
@@ -66,9 +66,10 @@ pub struct Server {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "camelCase")] // this particular file is camelcase for reasons
+#[serde(rename_all = "camelCase")] 
 pub struct Repository {
     pub repo_name: String,
+    #[serde(deserialize_with = "deserialize_checksum")]
     pub checksum: Md5Digest,
     pub required_mods: Vec<Mod>,
     pub optional_mods: Vec<Mod>,
@@ -76,6 +77,43 @@ pub struct Repository {
     pub repo_basic_authentication: Option<BasicAuth>,
     pub version: String,
     pub servers: Vec<Server>,
+}
+
+// Add this new function to handle both checksum variants
+fn deserialize_checksum<'de, D>(deserializer: D) -> Result<Md5Digest, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let mut checksum_str = String::deserialize(deserializer)?;
+
+    // Truncate to the first 32 characters if longer
+    if checksum_str.len() > 32 {
+        checksum_str.truncate(32);
+    }
+
+    // Validate length
+    if checksum_str.len() != 32 {
+        return Err(serde::de::Error::custom(format!(
+            "Invalid MD5 digest length: {}. Expected 32 characters, got {} characters.\nValue: {}",
+            checksum_str.len(),
+            checksum_str,
+            checksum_str
+        )));
+    }
+
+    // Validate hex characters
+    if !checksum_str.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(serde::de::Error::custom(format!(
+            "Invalid MD5 digest format. Contains non-hex characters: {}",
+            checksum_str
+        )));
+    }
+
+    Md5Digest::new(&checksum_str).map_err(|e| serde::de::Error::custom(format!(
+        "Failed to parse MD5 digest '{}': {}",
+        checksum_str,
+        e
+    )))
 }
 
 impl Repository {
