@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read};
 use std::path::{Path, PathBuf};
+use rayon::prelude::*;
 
 #[derive(Debug, Clone)]
 pub enum QuickDiffResult {
@@ -69,7 +70,7 @@ pub fn quick_diff(
     let local_path = local_base_path.join(Path::new(&format!("{}/", remote_mod.mod_name)));
     let srf_path = local_path.join("mod.srf");
 
-    if !srf_path.exists() {
+    if (!srf_path.exists()) {
         println!("No local SRF found for {}, needs full check", remote_mod.mod_name);
         return Ok(QuickDiffResult::NeedsFull);
     }
@@ -90,14 +91,10 @@ pub fn quick_diff(
         remote_srf.checksum
     );
 
-    if local_srf.checksum == remote_srf.checksum 
-        && local_srf.files.len() == remote_srf.files.len() 
-        && local_path.exists() {
+    if local_srf.checksum == remote_srf.checksum {
         println!("Quick check passed for {}", remote_mod.mod_name);
         Ok(QuickDiffResult::UpToDate)
     } else {
-        // If we got partial SRF data that was enough to determine checksums don't match,
-        // we need the full SRF to do proper diffing
         println!("Quick check detected changes for {}, needs full check", remote_mod.mod_name);
         Ok(QuickDiffResult::NeedsFull)
     }

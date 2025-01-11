@@ -6,6 +6,7 @@ use std::path::Path;
 use std::sync::mpsc::Sender;
 use std::{fs, io};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use rayon::prelude::*;
 
 #[derive(Debug, Clone)]
 pub struct ModUpdate {
@@ -39,7 +40,7 @@ fn download_remote_srf(
 }
 
 fn create_file_updates(files: &[srf::File]) -> Vec<FileUpdate> {
-    files.iter().map(|f| FileUpdate {
+    files.par_iter().map(|f| FileUpdate {
         path: f.path.clone(),
         checksum: f.checksum.clone(),
         size: f.length,
@@ -127,25 +128,25 @@ pub fn scan_local_mods(
         };
 
         // Compare files between local and remote
-        let mut different_files = Vec::new();
-        
-        for remote_file in &remote_mod.files {
-            if let Some(local_file) = local_mod.files.iter().find(|f| f.path == remote_file.path) {
+        let different_files: Vec<FileUpdate> = remote_mod.files.par_iter().filter_map(|remote_file| {
+            if let Some(local_file) = local_mod.files.par_iter().find_any(|f| f.path == remote_file.path) {
                 if local_file.checksum != remote_file.checksum {
-                    different_files.push(FileUpdate {
+                    Some(FileUpdate {
                         path: remote_file.path.clone(),
                         checksum: remote_file.checksum.clone(),
                         size: remote_file.length,
-                    });
+                    })
+                } else {
+                    None
                 }
             } else {
-                different_files.push(FileUpdate {
+                Some(FileUpdate {
                     path: remote_file.path.clone(),
                     checksum: remote_file.checksum.clone(),
                     size: remote_file.length,
-                });
+                })
             }
-        }
+        }).collect();
 
         if !different_files.is_empty() {
             updates_needed.push(ModUpdate {

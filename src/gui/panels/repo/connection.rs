@@ -8,7 +8,7 @@ use super::state::RepoPanelState;
 use crate::mod_cache::ModCache;
 
 fn ensure_valid_url(url: &str) -> Result<String, String> {
-let url = if !url.starts_with("http://") && !url.starts_with("https://") {
+    let url = if !url.starts_with("http://") && !url.starts_with("https://") {
         format!("https://{}", url)
     } else {
         url.to_string()
@@ -120,25 +120,63 @@ pub fn connect_to_server(state: &mut RepoPanelState, repo_url: &str, sender: &Se
     };
 
     println!("Attempting to connect to repository: {}", repo_url);
-    
-    // Start connection process
     state.set_connecting();
     let sender = sender.clone();
     
     std::thread::spawn(move || {
         let mut agent = ureq::agent();
-        match Repository::new(&repo_url, &mut agent) {
-            Ok(repo) => {
-                println!("Successfully connected to repository {}", repo_url);
-                sender.send(CommandMessage::ConnectionComplete(repo))
+        println!("Connecting to URL: {}", repo_url);
+        match agent.get(&repo_url).call() {
+            Ok(response) => {
+                println!("Successfully downloaded repo.json from {}", repo_url);
+                
+                // Debug: Print content type
+                if let Some(content_type) = response.header("Content-Type") {
+                    println!("Content-Type: {}", content_type);
+                    println!("Content-Length: {}", response.header("Content-Length").unwrap_or_default());
+                }
+                
+                // Try to read raw response first
+                match response.into_string() {
+                    Ok(raw_json) => {
+                        println!("Raw JSON (first 200 chars): {}", &raw_json[..raw_json.len().min(200)]);
+                        
+                        match serde_json::from_str::<Repository>(&raw_json) {
+                            Ok(repo) => {
+                                println!("Successfully parsed repository data with {} required mods", repo.required_mods.len());
+                                sender.send(CommandMessage::ConnectionComplete(repo))
+                            },
+                            Err(e) => {
+                                let error_msg = analyze_json_error(&raw_json, e);
+                                eprintln!("JSON parsing error: {}", error_msg);
+                                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw_json) {
+                                    eprintln!("Full JSON structure:\n{}", serde_json::to_string_pretty(&value).unwrap());
+                                }
+                                sender.send(CommandMessage::ConnectionError(error_msg))
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        let error_msg = format!(
+                            "Failed to read response body from {}: {}",
+                            repo_url,
+                            e
+                        );
+                        eprintln!("Response body read error: {}", error_msg);
+                        sender.send(CommandMessage::ConnectionError(error_msg))
+                    }
+                }
             },
             Err(e) => {
-                eprintln!("Failed to connect to repository {}: {}", repo_url, e);
-                sender.send(CommandMessage::ConnectionError(format!(
-                    "Failed to connect to {}: {}", 
-                    repo_url, 
-                    e.to_string()
-                )))
+                let error_msg = match e {
+                    ureq::Error::Status(status, _) => format!(
+                        "HTTP error {}: Could not find repo.json at {}. Please check the URL is correct.",
+                        status, repo_url
+                    ),
+                    _ => format!("Failed to download repo.json from {}: {}", repo_url, e),
+                };
+                eprintln!("Connection error: {}", error_msg);
+                sender.send(CommandMessage::ConnectionError(error_msg))
             },
         }.ok();
     });

@@ -235,6 +235,70 @@ struct DownloadedSrf {
     srf_data: srf::Mod,
 }
 
+#[derive(Debug)]
+enum ChecksumExtractionError {
+    NoJsonStart,
+    NoChecksumField,
+    MalformedChecksum(String),
+    InvalidLength(usize),
+    NonHexCharacters,
+}
+
+impl std::fmt::Display for ChecksumExtractionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoJsonStart => write!(f, "Data does not start with a JSON object"),
+            Self::NoChecksumField => write!(f, "Could not find checksum field"),
+            Self::MalformedChecksum(details) => write!(f, "Malformed checksum: {}", details),
+            Self::InvalidLength(len) => write!(f, "Invalid checksum length: {} (expected 32)", len),
+            Self::NonHexCharacters => write!(f, "Checksum contains non-hexadecimal characters"),
+        }
+    }
+}
+
+fn extract_checksum(json: &str) -> Result<String, ChecksumExtractionError> {
+    if !json.starts_with('{') {
+        return Err(ChecksumExtractionError::NoJsonStart);
+    }
+
+    // Look for "Checksum":" pattern with optional whitespace
+    let checksum_patterns = [
+        r#""Checksum":""#,
+        r#""checksum":""#,
+        r#""Checksum": ""#,
+        r#""checksum": ""#,
+    ];
+
+    for pattern in checksum_patterns {
+        if let Some(start_pos) = json.find(pattern) {
+            let quote_pos = start_pos + pattern.len();
+            if let Some(end_quote) = json[quote_pos..].find('"') {
+                let checksum = &json[quote_pos..quote_pos + end_quote];
+                
+                // Validate checksum format
+                if checksum.len() != 32 {
+                    return Err(ChecksumExtractionError::InvalidLength(checksum.len()));
+                }
+                
+                if !checksum.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Err(ChecksumExtractionError::NonHexCharacters);
+                }
+
+                // Check for any suspicious patterns that might indicate JSON corruption
+                if checksum.contains('{') || checksum.contains('}') || checksum.contains('[') || checksum.contains(']') {
+                    return Err(ChecksumExtractionError::MalformedChecksum(
+                        "Contains invalid JSON characters".to_string()
+                    ));
+                }
+
+                return Ok(checksum.to_string());
+            }
+        }
+    }
+    
+    Err(ChecksumExtractionError::NoChecksumField)
+}
+
 fn download_remote_srf(
     agent: &ureq::Agent,
     repo_url: &str,
@@ -246,42 +310,60 @@ fn download_remote_srf(
         &format!("{}/mod.srf", mod_name)
     );
 
-    // For partial sync, just get first 512 bytes to check checksum
-    // Otherwise download the entire file
-    let buf = if !partial {
-        download_srf_part(agent, &remote_srf_url, Some((0, 511)))?
-    } else {
-        download_srf_part(agent, &remote_srf_url, None)?
-    };
+    if partial {
+        println!("Downloading partial SRF for {}", mod_name);
+        // Get first 256 bytes which should contain the checksum
+        let buf = download_srf_part(agent, &remote_srf_url, Some((0, 255)))?;
+        let bomless = buf.trim_start_matches('\u{feff}');
 
+        match extract_checksum(bomless) {
+            Ok(checksum) => {
+                match Md5Digest::new(&checksum) {
+                    Ok(checksum) => {
+                        let partial_srf = srf::Mod {
+                            name: mod_name.to_string(),
+                            checksum: checksum.clone(),
+                            files: vec![],
+                        };
+                        
+                        println!("Successfully extracted checksum {} from partial SRF for {}", 
+                            checksum, mod_name);
+                        return Ok((partial_srf, true));
+                    },
+                    Err(e) => {
+                        println!("Invalid MD5 format in partial SRF for {}: {}", mod_name, e);
+                    }
+                }
+            },
+            Err(e) => {
+                println!("Failed to extract checksum from partial SRF for {}: {}", mod_name, e);
+            }
+        }
+
+        println!("Could not find valid checksum in partial data for {}, downloading full SRF", mod_name);
+    }
+
+    download_full_srf(agent, &remote_srf_url, mod_name)
+}
+
+fn download_full_srf(
+    agent: &ureq::Agent,
+    remote_srf_url: &str,
+    mod_name: &str,
+) -> Result<(srf::Mod, bool), Error> {
+    println!("Downloading full SRF for {}", mod_name);
+    let buf = download_srf_part(agent, remote_srf_url, None)?;
     let bomless = buf.trim_start_matches('\u{feff}');
     let remote_is_legacy = srf::is_legacy_srf(&mut Cursor::new(bomless)).context(IoSnafu)?;
 
-    let partial_result = if remote_is_legacy {
+    if remote_is_legacy {
         srf::deserialize_legacy_srf(&mut BufReader::new(Cursor::new(bomless)))
             .context(SrfDeserializationSnafu)
+            .map(|srf| (srf, false))
     } else {
-        serde_json::from_str(bomless).context(SerializationSnafu)
-    };
-
-    // If parsing failed due to truncated data and we're not in force mode, 
-    // download the full file and try again
-    match partial_result {
-        Ok(srf) => Ok((srf, !partial)),
-        Err(_) if !partial => {
-            // Retry with full file download
-            let full_buf = download_srf_part(agent, &remote_srf_url, None)?;
-            let bomless = full_buf.trim_start_matches('\u{feff}');
-
-            if remote_is_legacy {
-                srf::deserialize_legacy_srf(&mut BufReader::new(Cursor::new(bomless)))
-                    .context(SrfDeserializationSnafu)
-                    .map(|srf| (srf, false))
-            } else {
-                serde_json::from_str(bomless).context(SerializationSnafu).map(|srf| (srf, false))
-            }
-        },
-        Err(e) => Err(e),
+        serde_json::from_str(bomless)
+            .context(SerializationSnafu)
+            .map(|srf| (srf, false))
     }
 }
 
@@ -393,19 +475,25 @@ pub fn sync_with_context(
     // Initialize or load mod cache
     let mut mod_cache = ModCache::from_disk_or_empty(base_path).context(ModCacheOpenSnafu)?;
 
+    // Download all partial SRF files upfront
+    let mut partial_srfs = Vec::new();
+    for r#mod in &remote_repo.required_mods {
+        println!("Downloading SRF for {}", r#mod.mod_name);
+        let (srf, partial) = download_remote_srf(agent, repo_url, &r#mod.mod_name, true)?;
+        partial_srfs.push((r#mod, srf, partial));
+    }
+
     // Convert scan results into download commands
     let mut download_commands = vec![];
     let mut failed_mods: Vec<String> = Vec::new();
     let mut downloaded_srfs = Vec::new();
 
-    for r#mod in &remote_repo.required_mods {
+    for (r#mod, srf, partial) in partial_srfs {
         let mut needs_full_diff = force_sync;
         let mut diff_result = None;
         let mut remote_srf = None;
 
-        if !force_sync {
-            let (srf, partial) = download_remote_srf(agent, repo_url, &r#mod.mod_name, false)?;
-
+        if !force_sync && partial {
             match diff::quick_diff(base_path, r#mod, &srf)? {
                 diff::QuickDiffResult::UpToDate => continue,
                 diff::QuickDiffResult::NeedsFull => {
@@ -415,7 +503,7 @@ pub fn sync_with_context(
         }
 
         if needs_full_diff {
-            let (full_srf, _) = download_remote_srf(agent, repo_url, &r#mod.mod_name, true)?;
+            let (full_srf, _) = download_remote_srf(agent, repo_url, &r#mod.mod_name, false)?;
             remote_srf = Some(full_srf.clone());  // Always store full SRF
             diff_result = Some(process_mod_diff(agent, repo_url, base_path, r#mod, full_srf, force_sync)?);
         }
@@ -457,7 +545,7 @@ pub fn sync_with_context(
             mod_cache.last_sync = Some(chrono::Utc::now());
             mod_cache.to_disk(base_path).context(ModCacheOpenSnafu)?;
 
-            if (!failed_mods.is_empty()) {
+            if !failed_mods.is_empty() {
                 println!("Sync completed with some failures:");
                 for failed in failed_mods {
                     println!("  - Failed to sync: {}", failed);
