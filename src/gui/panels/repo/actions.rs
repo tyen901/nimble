@@ -6,6 +6,7 @@ use std::sync::Arc;
 use crate::gui::state::CommandMessage;
 use crate::gui::panels::repo::state::ConnectionState;
 use crate::repository::Repository;
+use crate::commands::download::DownloadContext;
 use super::state::RepoPanelState;
 
 pub fn show_action_buttons(
@@ -16,8 +17,6 @@ pub fn show_action_buttons(
 ) {
     show_sync_button(ui, state, sender);
 }
-
-// Remove show_scan_button function entirely
 
 pub fn show_sync_button(
     ui: &mut egui::Ui,
@@ -55,8 +54,10 @@ pub fn show_sync_button(
             std::thread::spawn(move || {
                 let mut agent = ureq::agent();
                 let sync_context = crate::commands::sync::SyncContext {
-                    cancel: Arc::new(AtomicBool::new(false)),
-                    status_sender: Some(sender.clone()),
+                    download: DownloadContext {
+                        cancel: Arc::new(AtomicBool::new(false)),
+                        status_sender: Some(sender.clone()),
+                    },
                 };
 
                 match crate::commands::sync::sync_with_context(

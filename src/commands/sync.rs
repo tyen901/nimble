@@ -10,11 +10,16 @@ use std::path::Path;
 use tempfile::tempfile;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::mpsc::Sender;
+use rayon::iter::IntoParallelIterator;
+use rayon::iter::ParallelIterator;
+use crossbeam_channel::{bounded, Sender as CbSender, Receiver as CbReceiver};
 
 use super::diff::{self};
 use super::types::{DownloadCommand, DeleteCommand};  // Use shared types
 use crate::md5_digest::Md5Digest;
+use super::download::{self, DownloadContext};
 
 #[derive(Snafu, Debug)]
 pub enum Error {
@@ -48,16 +53,15 @@ impl From<diff::Error> for Error {
     }
 }
 
+#[derive(Clone)]
 pub struct SyncContext {
-    pub cancel: Arc<AtomicBool>,
-    pub status_sender: Option<Sender<CommandMessage>>,
+    pub download: DownloadContext,
 }
 
 impl Default for SyncContext {
     fn default() -> Self {
         Self {
-            cancel: Arc::new(AtomicBool::new(false)),
-            status_sender: None,
+            download: DownloadContext::default(),
         }
     }
 }
@@ -69,40 +73,6 @@ fn create_progress_bar(total_size: u64) -> ProgressBar {
         .with_key("eta", |state: &ProgressState, w: &mut dyn std::fmt::Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
         .progress_chars("#>-"));
     pb
-}
-
-fn download_file(
-    agent: &ureq::Agent,
-    remote_url: &str,
-    temp_file: &mut File,
-    context: &SyncContext,
-    progress_callback: impl Fn(u64, u64),
-) -> Result<u64, Error> {
-    let response = agent.get(remote_url).call().context(HttpSnafu {
-        url: remote_url.to_string(),
-    })?;
-
-    let total_size = response
-        .header("Content-Length")
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(0);
-
-    let mut reader = response.into_reader();
-    let mut downloaded = 0;
-    let mut buffer = vec![0; 8192];
-
-    while let Ok(n) = reader.read(&mut buffer) {
-        if n == 0 { break; }
-        if context.cancel.load(Ordering::SeqCst) {
-            return Err(Error::Cancelled);
-        }
-
-        temp_file.write_all(&buffer[..n]).context(IoSnafu)?;
-        downloaded += n;
-        progress_callback(downloaded as u64, total_size);
-    }
-
-    Ok(total_size)
 }
 
 fn update_mod_cache(base_path: &Path, mods: &[&repository::Mod], mod_cache: &mut ModCache) -> Result<(), Error> {
@@ -134,85 +104,6 @@ fn update_mod_cache(base_path: &Path, mods: &[&repository::Mod], mod_cache: &mut
     Ok(())
 }
 
-fn execute_command_list(
-    agent: &mut ureq::Agent,
-    remote_base: &str,
-    local_base: &Path,
-    commands: Vec<DownloadCommand>,
-    context: &SyncContext,
-) -> Result<(), Error> {
-    let multi = MultiProgress::new();
-    let total = commands.len();
-    let overall_bar = multi.add(ProgressBar::new(total as u64));
-    overall_bar.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} files ({eta})")
-            .unwrap()
-    );
-
-    for (i, command) in commands.into_iter().enumerate() {
-        if context.cancel.load(Ordering::SeqCst) {
-            return Err(Error::Cancelled);
-        }
-
-        println!("downloading {} of {} - {}", i, total, command.file);
-
-        if let Some(sender) = &context.status_sender {
-            sender.send(CommandMessage::SyncProgress {
-                file: command.file.clone(),
-                progress: 0.0,
-                processed: i,
-                total: total,
-            }).ok();
-        }
-
-        let mut temp_download_file = tempfile().context(IoSnafu)?;
-        let remote_url = repository::make_repo_file_url(remote_base, &command.file);
-        
-        let file_bar = multi.add(ProgressBar::new(0));
-        file_bar.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
-                .unwrap()
-        );
-        file_bar.set_message(command.file.clone());
-
-        let sender = context.status_sender.clone();
-        let file_name = command.file.clone();
-        let current_index = i;
-        let total_files = total;
-
-        let file_bar_ref = file_bar.clone(); // Clone the progress bar for the closure
-
-        let total_size = download_file(agent, &remote_url, &mut temp_download_file, context, move |downloaded, total| {
-            file_bar_ref.set_position(downloaded);
-            if let Some(sender) = &sender {
-                sender.send(CommandMessage::SyncProgress {
-                    file: file_name.clone(),
-                    progress: downloaded as f32 / total as f32,
-                    processed: current_index,
-                    total: total_files,
-                }).ok();
-            }
-        })?;
-
-        file_bar.finish_and_clear();
-        overall_bar.inc(1);
-
-        // Write to permanent file
-        let file_path = local_base.join(Path::new(&command.file));
-        std::fs::create_dir_all(file_path.parent().expect("file_path did not have a parent"))
-            .context(IoSnafu)?;
-        let mut local_file = File::create(&file_path).context(IoSnafu)?;
-
-        temp_download_file.seek(SeekFrom::Start(0)).context(IoSnafu)?;
-        std::io::copy(&mut temp_download_file, &mut local_file).context(IoSnafu)?;
-    }
-
-    overall_bar.finish_with_message("All files downloaded");
-    Ok(())
-}
-
 fn download_srf_part(
     agent: &ureq::Agent, 
     url: &str,
@@ -224,7 +115,7 @@ fn download_srf_part(
         request = request.set("Range", &format!("bytes={}-{}", start, end));
     }
 
-    let mut response = request.call().context(HttpSnafu { url: url.to_string() })?;
+    let response = request.call().context(HttpSnafu { url: url.to_string() })?;
     let mut buf = String::new();
     response.into_reader().read_to_string(&mut buf).context(IoSnafu)?;
     Ok(buf)
@@ -257,7 +148,7 @@ impl std::fmt::Display for ChecksumExtractionError {
 }
 
 fn extract_checksum(json: &str) -> Result<String, ChecksumExtractionError> {
-    if !json.starts_with('{') {
+    if (!json.starts_with('{')) {
         return Err(ChecksumExtractionError::NoJsonStart);
     }
 
@@ -396,7 +287,7 @@ fn process_mod_diff(
     let (downloads, deletes) = diff::diff_mod(base_path, r#mod, &remote_srf, force_sync)?;
     
     // Handle file deletions first
-    remove_leftover_files(base_path, &r#mod.mod_name, deletes)?;
+    remove_leftover_files(base_path, r#mod.mod_name.as_str(), deletes)?;
 
     if !downloads.is_empty() {
         println!("Mod {} needs {} file(s) updated", r#mod.mod_name, downloads.len());
@@ -453,13 +344,13 @@ pub fn sync_with_context(
     }
 
     let check_cancelled = || {
-        if context.cancel.load(Ordering::SeqCst) {
+        if context.download.cancel.load(Ordering::SeqCst) {
             return Err(Error::Cancelled);
         }
         Ok(())
     };
 
-    if let Some(sender) = &context.status_sender {
+    if let Some(sender) = &context.download.status_sender {
         sender.send(CommandMessage::ScanningStatus("Fetching repository information...".into())).ok();
     }
     check_cancelled()?;
@@ -531,38 +422,34 @@ pub fn sync_with_context(
     }
 
     // Execute downloads and update cache
-    let res = execute_command_list(agent, repo_url, base_path, download_commands, context);
+    let res = download::download_files(
+        agent, 
+        repo_url, 
+        base_path, 
+        download_commands, 
+        context.download.clone()
+    ).map_err(|e| match e {
+        download::Error::Cancelled => Error::Cancelled,
+        e => Error::Io { source: std::io::Error::new(std::io::ErrorKind::Other, e.to_string()) },
+    })?;
 
-    match res {
-        Ok(()) => {
-            println!("Downloads completed");
-            
-            // Save updated SRF files
-            save_srf_files(base_path, &downloaded_srfs)?;
-            
-            // Update repository info in cache
-            mod_cache.repository = Some(remote_repo.clone());
-            mod_cache.last_sync = Some(chrono::Utc::now());
-            mod_cache.to_disk(base_path).context(ModCacheOpenSnafu)?;
+    println!("Downloads completed");
+    
+    // Save updated SRF files
+    save_srf_files(base_path, &downloaded_srfs)?;
+    
+    // Update repository info in cache
+    mod_cache.repository = Some(remote_repo.clone());
+    mod_cache.last_sync = Some(chrono::Utc::now());
+    mod_cache.to_disk(base_path).context(ModCacheOpenSnafu)?;
 
-            if !failed_mods.is_empty() {
-                println!("Sync completed with some failures:");
-                for failed in failed_mods {
-                    println!("  - Failed to sync: {}", failed);
-                }
-            } else {
-                println!("Sync completed successfully!");
-            }
-            Ok(())
-        },
-        Err(Error::Cancelled) => {
-            println!("Sync was cancelled by user");
-            Err(Error::Cancelled)
-        },
-        Err(e) => {
-            println!("Sync failed: {}", e);
-            println!("You should retry the sync");
-            Err(e)
+    if !failed_mods.is_empty() {
+        println!("Sync completed with some failures:");
+        for failed in failed_mods {
+            println!("  - Failed to sync: {}", failed);
         }
+    } else {
+        println!("Sync completed successfully!");
     }
+    Ok(())
 }

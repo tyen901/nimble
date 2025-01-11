@@ -4,7 +4,7 @@ use crate::mod_cache::ModCache;
 use snafu::{ResultExt, Snafu};
 use std::cfg;
 use std::path::{Path, PathBuf};
-use std::collections::HashMap;  // Add this import
+use std::collections::HashMap;
 
 #[cfg(not(windows))]
 use snafu::OptionExt;

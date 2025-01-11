@@ -1,6 +1,6 @@
 use crate::gui::widgets::StatusDisplay;
 use crate::repository::Repository;
-use crate::mod_cache::ModCache;  // Add this import
+use crate::mod_cache::ModCache;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use super::profile::ProfileManager;
