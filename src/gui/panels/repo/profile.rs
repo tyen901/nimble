@@ -80,11 +80,11 @@ impl ProfileManager {
         &mut self,
         ui: &mut egui::Ui,
         sender: Option<&Sender<CommandMessage>>,
-    ) -> (bool, Option<String>) {  // Return both changed status and selected profile
+    ) -> (bool, Option<String>) {
         let mut changed = false;
         let mut selected_profile = None;
 
-        // Profile selector and management UI on a single line
+        // Profile selector and management UI
         ui.horizontal(|ui| {
             ui.heading("Profile:");
             ui.add_space(4.0);
@@ -139,32 +139,44 @@ impl ProfileManager {
             }
         });
 
-        // Show editor window if editing
+        // Handle the editor window separately to avoid borrow checker issues
+        if self.editing_profile.is_some() {
+            if self.show_editor_window(ui, sender) {
+                changed = true;
+            }
+        }
+
+        (changed, selected_profile)
+    }
+
+    fn show_editor_window(&mut self, ui: &mut egui::Ui, sender: Option<&Sender<CommandMessage>>) -> bool {
+        let mut changed = false;
+        let mut should_save = false;
+        let mut should_close = false;
+
         if let Some(editing) = &mut self.editing_profile {
-            let mut editing_clone = editing.clone();
             egui::Window::new("Edit Profile")
                 .show(ui.ctx(), |ui| {
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
                             ui.label("Name:");
-                            ui.text_edit_singleline(&mut editing_clone.name);
+                            ui.text_edit_singleline(&mut editing.name);
                         });
                         ui.horizontal(|ui| {
                             ui.label("Repository URL:");
-                            ui.text_edit_singleline(&mut editing_clone.repo_url);
+                            ui.text_edit_singleline(&mut editing.repo_url);
                         });
                         
-                        // Improved path picker integration
                         ui.group(|ui| {
                             ui.label("Installation Path:");
                             ui.horizontal(|ui| {
-                                ui.label(editing_clone.base_path.to_string_lossy().to_string());
+                                ui.label(editing.base_path.to_string_lossy().to_string());
                                 if ui.button("📂 Browse").clicked() {
                                     if let Some(path) = rfd::FileDialog::new()
                                         .set_title("Select Installation Directory")
                                         .pick_folder() 
                                     {
-                                        editing_clone.base_path = path;
+                                        editing.base_path = path;
                                     }
                                 }
                             });
@@ -173,28 +185,34 @@ impl ProfileManager {
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
                             if ui.button("Save").clicked() {
-                                if !editing_clone.name.is_empty() {
-                                    self.profiles.retain(|p| p.name != editing_clone.name);
-                                    self.profiles.push(editing_clone.clone());
-                                    self.selected_profile = Some(editing_clone.name.clone());
-                                    self.path_picker.set_path(&editing_clone.base_path);
-                                    if let Some(sender) = sender {
-                                        sender.send(CommandMessage::ConfigChanged).ok();
-                                    }
-                                    self.editing_profile = None; // Clear editing state
-                                    changed = true;
-                                }
+                                should_save = true;
                             }
                             if ui.button("Cancel").clicked() {
-                                self.editing_profile = None; // Clear editing state
-                                changed = true;
+                                should_close = true;
                             }
                         });
                     });
                 });
+
+            // Handle actions outside the window closure
+            if should_save && !editing.name.is_empty() {
+                let editing_clone = editing.clone();
+                self.profiles.retain(|p| p.name != editing_clone.name);
+                self.profiles.push(editing_clone.clone());
+                self.selected_profile = Some(editing_clone.name);
+                self.path_picker.set_path(&editing_clone.base_path);
+                if let Some(sender) = sender {
+                    sender.send(CommandMessage::ConfigChanged).ok();
+                }
+                self.editing_profile = None;
+                changed = true;
+            } else if should_close {
+                self.editing_profile = None;
+                changed = true;
+            }
         }
 
-        (changed, selected_profile)
+        changed
     }
 
     pub fn set_selected(&mut self, profile: Option<String>) {
