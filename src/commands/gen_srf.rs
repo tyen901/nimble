@@ -33,17 +33,7 @@ pub fn gen_srf_for_mod(mod_path: &Path, output_dir: Option<&Path>) -> srf::Mod {
 }
 
 pub fn open_cache_or_gen_srf(base_path: &Path) -> Result<ModCache, mod_cache::Error> {
-    match ModCache::from_disk(base_path) {
-        Ok(cache) => Ok(cache),
-        Err(mod_cache::Error::FileOpen { source })
-            if source.kind() == std::io::ErrorKind::NotFound =>
-        {
-            println!("nimble-cache.json not found, generating...");
-            gen_srf(base_path, None, None)?;
-            ModCache::from_disk_or_empty(base_path)
-        }
-        Err(e) => Err(e),
-    }
+    ModCache::from_disk_or_empty(base_path)
 }
 
 pub fn gen_srf(

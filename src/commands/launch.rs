@@ -4,6 +4,7 @@ use crate::mod_cache::ModCache;
 use snafu::{ResultExt, Snafu};
 use std::cfg;
 use std::path::{Path, PathBuf};
+use std::collections::HashMap;  // Add this import
 
 #[cfg(not(windows))]
 use snafu::OptionExt;
@@ -88,11 +89,15 @@ const STEAM_URL_ENCODE: &percent_encoding::AsciiSet = &percent_encoding::CONTROL
     .add(b'|'); // Pipe must be encoded
 
 pub fn launch(base_path: &Path, launch_params: Option<&str>) -> Result<(), Error> {
-    let mod_cache = open_cache_or_gen_srf(base_path).context(ModCacheOpenSnafu)?;
-    let proton_base_path = convert_host_base_path_to_proton_base_path(base_path)?;
+    // Try to load cache but don't fail if it doesn't exist
+    let mod_cache = match ModCache::from_disk(base_path) {
+        Ok(cache) => cache,
+        Err(_) => ModCache::new(HashMap::new()).unwrap(),
+    };
 
+    let proton_base_path = convert_host_base_path_to_proton_base_path(base_path)?;
     let binding = generate_mod_args(&proton_base_path, &mod_cache, launch_params);
-    let cmdline = percent_encoding::utf8_percent_encode(&binding, percent_encoding::NON_ALPHANUMERIC);
+    let cmdline = percent_encoding::utf8_percent_encode(&binding, STEAM_URL_ENCODE);
 
     let steam_url = format!("steam://run/107410//{}/", cmdline);
 

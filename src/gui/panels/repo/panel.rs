@@ -34,9 +34,9 @@ impl RepoPanel {
                 panel.state.set_selected_profile(Some(first_profile));
             }
         } else {
-            // Load cache for existing selected profile
+            // Try to load cache but don't fail if it doesn't exist
             if let Some(profile) = panel.state.profile_manager().get_selected_profile() {
-                if let Ok(cache) = ModCache::from_disk_or_empty(&profile.base_path) {
+                if let Ok(cache) = ModCache::from_disk(&profile.base_path) {
                     panel.state.load_cache(&cache);
                 }
             }
