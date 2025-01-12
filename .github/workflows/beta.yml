@@ -52,18 +52,18 @@ jobs:
           Copy-Item "target\release\nimble-gui.exe" -Destination "dist\"
           Compress-Archive -Path "dist\*" -DestinationPath "nimble-windows.zip"
 
-      - name: Upload artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: beta-artifacts
+          name: nimble-windows
           path: nimble-windows.zip
           
-      - name: Create Beta Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create "beta-${env:GITHUB_SHA.Substring(0,8)}" `
-            --title "Beta Release ${{ steps.get_version.outputs.version }}" `
-            --prerelease `
-            --notes "Beta release from branch ${env:GITHUB_REF#refs/heads/}" `
-            nimble-windows.zip
+      # - name: Create Beta Release
+      #   env:
+      #     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #   run: |
+      #     gh release create "beta-${env:GITHUB_SHA.Substring(0,8)}" `
+      #       --title "Beta Release ${{ steps.get_version.outputs.version }}" `
+      #       --prerelease `
+      #       --notes "Beta release from branch ${env:GITHUB_REF#refs/heads/}" `
+      #       nimble-windows.zip
