@@ -43,9 +43,6 @@ on:
     branches:
       - master
       - release/**
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+*'
-      - '[0-9]+.[0-9]+.[0-9]+*'
   pull_request:
 
 jobs:
@@ -54,15 +51,9 @@ jobs:
     runs-on: "ubuntu-20.04"
     outputs:
       val: ${{ steps.plan.outputs.manifest }}
-      # Only use the tag if it matches version number pattern
-      tag: ${{ !github.event.pull_request && startsWith(github.ref, 'refs/tags/') && 
-        (startsWith(github.ref_name, 'v') || contains(github.ref_name, '.')) && 
-        github.ref_name || '' }}
-      tag-flag: ${{ !github.event.pull_request && startsWith(github.ref, 'refs/tags/') && 
-        (startsWith(github.ref_name, 'v') || contains(github.ref_name, '.')) && 
-        format('--tag={0}', github.ref_name) || '' }}
-      publishing: ${{ !github.event.pull_request && startsWith(github.ref, 'refs/tags/') && 
-        (startsWith(github.ref_name, 'v') || contains(github.ref_name, '.')) }}
+      tag: ${{ github.sha }}
+      tag-flag: ${{ format('--tag={0}', github.sha) }}
+      publishing: ${{ !github.event.pull_request }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -86,7 +77,7 @@ jobs:
       # but also really annoying to build CI around when it needs secrets to work right.)
       - id: plan
         run: |
-          dist ${{ (!github.event.pull_request && format('host --steps=create --tag={0}', github.ref_name)) || 'plan' }} --output-format=json > plan-dist-manifest.json
+          dist plan --output-format=json > plan-dist-manifest.json
           echo "dist ran successfully"
           cat plan-dist-manifest.json
           echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
@@ -225,7 +216,9 @@ jobs:
       - build-local-artifacts
       - build-global-artifacts
     # Only run if we're "publishing", and only if local and global didn't fail (skipped is fine)
-    if: ${{ always() && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
+    if: ${{ always() && needs.plan.outputs.publishing == 'true' && 
+        (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && 
+        (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     runs-on: "ubuntu-20.04"
