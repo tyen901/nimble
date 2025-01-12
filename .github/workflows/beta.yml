@@ -20,15 +20,26 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         
+      - name: Cache cargo registry
+        uses: actions/cache@v3 
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
       - name: Build Release
         run: cargo build --release --bins
-        
-      - name: Prepare artifacts
+
+      - name: Prepare artifacts 
         run: |
           mkdir -p dist
-          cp target/release/nimble dist/
-          cp target/release/nimble-gui dist/
-          
+          cp target/release/nimble{,-gui}{,.exe} dist/ 2>/dev/null || :
+          cp target/release/nimble{,-gui} dist/ 2>/dev/null || :
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
