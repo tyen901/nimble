@@ -15,6 +15,7 @@ use std::sync::mpsc::Sender;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 use crossbeam_channel::{bounded, Sender as CbSender, Receiver as CbReceiver};
+use rayon::prelude::*;
 
 use super::diff::{self};
 use super::types::{DownloadCommand, DeleteCommand};  // Use shared types
@@ -126,70 +127,6 @@ struct DownloadedSrf {
     srf_data: srf::Mod,
 }
 
-#[derive(Debug)]
-enum ChecksumExtractionError {
-    NoJsonStart,
-    NoChecksumField,
-    MalformedChecksum(String),
-    InvalidLength(usize),
-    NonHexCharacters,
-}
-
-impl std::fmt::Display for ChecksumExtractionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NoJsonStart => write!(f, "Data does not start with a JSON object"),
-            Self::NoChecksumField => write!(f, "Could not find checksum field"),
-            Self::MalformedChecksum(details) => write!(f, "Malformed checksum: {}", details),
-            Self::InvalidLength(len) => write!(f, "Invalid checksum length: {} (expected 32)", len),
-            Self::NonHexCharacters => write!(f, "Checksum contains non-hexadecimal characters"),
-        }
-    }
-}
-
-fn extract_checksum(json: &str) -> Result<String, ChecksumExtractionError> {
-    if (!json.starts_with('{')) {
-        return Err(ChecksumExtractionError::NoJsonStart);
-    }
-
-    // Look for "Checksum":" pattern with optional whitespace
-    let checksum_patterns = [
-        r#""Checksum":""#,
-        r#""checksum":""#,
-        r#""Checksum": ""#,
-        r#""checksum": ""#,
-    ];
-
-    for pattern in checksum_patterns {
-        if let Some(start_pos) = json.find(pattern) {
-            let quote_pos = start_pos + pattern.len();
-            if let Some(end_quote) = json[quote_pos..].find('"') {
-                let checksum = &json[quote_pos..quote_pos + end_quote];
-                
-                // Validate checksum format
-                if checksum.len() != 32 {
-                    return Err(ChecksumExtractionError::InvalidLength(checksum.len()));
-                }
-                
-                if !checksum.chars().all(|c| c.is_ascii_hexdigit()) {
-                    return Err(ChecksumExtractionError::NonHexCharacters);
-                }
-
-                // Check for any suspicious patterns that might indicate JSON corruption
-                if checksum.contains('{') || checksum.contains('}') || checksum.contains('[') || checksum.contains(']') {
-                    return Err(ChecksumExtractionError::MalformedChecksum(
-                        "Contains invalid JSON characters".to_string()
-                    ));
-                }
-
-                return Ok(checksum.to_string());
-            }
-        }
-    }
-    
-    Err(ChecksumExtractionError::NoChecksumField)
-}
-
 fn download_remote_srf(
     agent: &ureq::Agent,
     repo_url: &str,
@@ -207,7 +144,7 @@ fn download_remote_srf(
         let buf = download_srf_part(agent, &remote_srf_url, Some((0, 255)))?;
         let bomless = buf.trim_start_matches('\u{feff}');
 
-        match extract_checksum(bomless) {
+        match diff::extract_checksum(bomless) {  // Use the one from diff module
             Ok(checksum) => {
                 match Md5Digest::new(&checksum) {
                     Ok(checksum) => {
@@ -366,51 +303,62 @@ pub fn sync_with_context(
     // Initialize or load mod cache
     let mut mod_cache = ModCache::from_disk_or_empty(base_path).context(ModCacheOpenSnafu)?;
 
-    // Download all partial SRF files upfront
-    let mut partial_srfs = Vec::new();
-    for r#mod in &remote_repo.required_mods {
-        println!("Downloading SRF for {}", r#mod.mod_name);
-        let (srf, partial) = download_remote_srf(agent, repo_url, &r#mod.mod_name, true)?;
-        partial_srfs.push((r#mod, srf, partial));
-    }
+    let partial_srfs: Result<Vec<_>, Error> = remote_repo.required_mods.iter().par_bridge()
+        .map(|r#mod| -> Result<_, Error> {
+            println!("Downloading SRF for {}", r#mod.mod_name);
+            let (srf, partial) = download_remote_srf(agent, repo_url, &r#mod.mod_name, true)?;
+            Ok((r#mod, srf, partial))
+        })
+        .collect();
+    
+    let partial_srfs = partial_srfs?;
 
-    // Convert scan results into download commands
-    let mut download_commands = vec![];
-    let mut failed_mods: Vec<String> = Vec::new();
-    let mut downloaded_srfs = Vec::new();
+    // Process mods in parallel
+    let results: Result<Vec<_>, Error> = partial_srfs.par_iter()
+        .map(|(r#mod, srf, partial)| -> Result<_, Error> {
+            let mut needs_full_diff = force_sync;
+            let mut diff_result = None;
+            let mut remote_srf = None;
 
-    for (r#mod, srf, partial) in partial_srfs {
-        let mut needs_full_diff = force_sync;
-        let mut diff_result = None;
-        let mut remote_srf = None;
-
-        if !force_sync && partial {
-            match diff::quick_diff(base_path, r#mod, &srf)? {
-                diff::QuickDiffResult::UpToDate => continue,
-                diff::QuickDiffResult::NeedsFull => {
-                    needs_full_diff = true;
-                },
-            }
-        }
-
-        if needs_full_diff {
-            let (full_srf, _) = download_remote_srf(agent, repo_url, &r#mod.mod_name, false)?;
-            remote_srf = Some(full_srf.clone());  // Always store full SRF
-            diff_result = Some(process_mod_diff(agent, repo_url, base_path, r#mod, full_srf, force_sync)?);
-        }
-
-        // Handle any diff results
-        if let Some((downloads, _)) = diff_result {
-            if !downloads.is_empty() {
-                download_commands.extend(downloads);
-                // Only store SRF if we have a full version
-                if let Some(srf) = remote_srf {
-                    downloaded_srfs.push(DownloadedSrf {
-                        mod_name: r#mod.mod_name.clone(),
-                        srf_data: srf,
-                    });
+            if !force_sync && *partial {
+                match diff::quick_diff(base_path, r#mod, &srf)? {
+                    diff::QuickDiffResult::UpToDate => return Ok((vec![], None)),
+                    diff::QuickDiffResult::NeedsFull => {
+                        needs_full_diff = true;
+                    },
                 }
             }
+
+            if needs_full_diff {
+                let (full_srf, _) = download_remote_srf(agent, repo_url, &r#mod.mod_name, false)?;
+                remote_srf = Some(full_srf.clone());
+                diff_result = Some(process_mod_diff(agent, repo_url, base_path, r#mod, full_srf, force_sync)?);
+            }
+
+            // Handle diff results
+            if let Some((downloads, _)) = diff_result {
+                if !downloads.is_empty() {
+                    return Ok((downloads, remote_srf.map(|srf| DownloadedSrf {
+                        mod_name: r#mod.mod_name.clone(),
+                        srf_data: srf,
+                    })));
+                }
+            }
+            
+            Ok((vec![], None))
+        })
+        .collect();
+
+    let results = results?;
+
+    // Combine results
+    let mut download_commands = Vec::new();
+    let mut downloaded_srfs = Vec::new();
+    
+    for (downloads, srf_opt) in results {
+        download_commands.extend(downloads);
+        if let Some(srf) = srf_opt {
+            downloaded_srfs.push(srf);
         }
     }
 
@@ -443,13 +391,6 @@ pub fn sync_with_context(
     mod_cache.last_sync = Some(chrono::Utc::now());
     mod_cache.to_disk(base_path).context(ModCacheOpenSnafu)?;
 
-    if !failed_mods.is_empty() {
-        println!("Sync completed with some failures:");
-        for failed in failed_mods {
-            println!("  - Failed to sync: {}", failed);
-        }
-    } else {
-        println!("Sync completed successfully!");
-    }
+    println!("Sync completed successfully!");
     Ok(())
 }

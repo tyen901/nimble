@@ -75,28 +75,80 @@ pub fn quick_diff(
         return Ok(QuickDiffResult::NeedsFull);
     }
 
-    let local_srf = {
-        let file = File::open(&srf_path).context(IoSnafu)?;
-        let mut reader = BufReader::new(file);
-        if srf::is_legacy_srf(&mut reader).context(IoSnafu)? {
-            srf::deserialize_legacy_srf(&mut reader).context(LegacySrfDeserializationSnafu)?
-        } else {
-            serde_json::from_reader(&mut reader).context(SrfDeserializationSnafu)?
+    // Just read enough bytes to get the checksum
+    let file = File::open(&srf_path).context(IoSnafu)?;
+    let mut reader = BufReader::new(file);
+    let mut initial_bytes = String::with_capacity(512);
+    reader.take(512).read_to_string(&mut initial_bytes).context(IoSnafu)?;
+
+    // Try to extract checksum from the initial bytes
+    match extract_checksum(&initial_bytes) {
+        Ok(local_checksum) => {
+            println!("Quick comparing mod {} (local: {}, remote: {})", 
+                remote_mod.mod_name,
+                local_checksum,
+                remote_srf.checksum
+            );
+
+            if local_checksum == remote_srf.checksum.to_string() {
+                println!("Quick check passed for {}", remote_mod.mod_name);
+                Ok(QuickDiffResult::UpToDate)
+            } else {
+                println!("Quick check detected changes for {}, needs full check", remote_mod.mod_name);
+                Ok(QuickDiffResult::NeedsFull)
+            }
+        },
+        Err(_) => {
+            println!("Could not find checksum in local SRF for {}, needs full check", remote_mod.mod_name);
+            Ok(QuickDiffResult::NeedsFull)
         }
-    };
+    }
+}
 
-    println!("Quick comparing mod {} (local: {}, remote: {})", 
-        remote_mod.mod_name,
-        local_srf.checksum,
-        remote_srf.checksum
-    );
+// Need to add this utility function for quick checksum extraction
+pub fn extract_checksum(json: &str) -> Result<String, ChecksumExtractionError> {
+    // Reuse the same checksum extraction logic from sync.rs
+    // Skip BOM if present
+    let json = json.trim_start_matches('\u{feff}');
+    
+    if !json.starts_with('{') {
+        return Err(ChecksumExtractionError::NoJsonStart);
+    }
 
-    if local_srf.checksum == remote_srf.checksum {
-        println!("Quick check passed for {}", remote_mod.mod_name);
-        Ok(QuickDiffResult::UpToDate)
-    } else {
-        println!("Quick check detected changes for {}, needs full check", remote_mod.mod_name);
-        Ok(QuickDiffResult::NeedsFull)
+    let checksum_patterns = [
+        r#""Checksum":""#,
+        r#""checksum":""#,
+        r#""Checksum": ""#,
+        r#""checksum": ""#,
+    ];
+
+    for pattern in checksum_patterns {
+        if let Some(start_pos) = json.find(pattern) {
+            let quote_pos = start_pos + pattern.len();
+            if let Some(end_quote) = json[quote_pos..].find('"') {
+                let checksum = &json[quote_pos..quote_pos + end_quote];
+                if checksum.len() == 32 && checksum.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Ok(checksum.to_string());
+                }
+            }
+        }
+    }
+    
+    Err(ChecksumExtractionError::NoChecksumField)
+}
+
+#[derive(Debug)]
+pub enum ChecksumExtractionError {
+    NoJsonStart,
+    NoChecksumField,
+}
+
+impl std::fmt::Display for ChecksumExtractionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoJsonStart => write!(f, "Data does not start with a JSON object"),
+            Self::NoChecksumField => write!(f, "Could not find checksum field"),
+        }
     }
 }
 
