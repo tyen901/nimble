@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -20,12 +20,6 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         
-      - name: Work around spurious network errors
-        run: |
-          if rustc +stable --version --verbose | grep -q '^release: 1\.7[01]\.'; then
-            echo CARGO_HTTP_MULTIPLEXING=false >> $GITHUB_ENV
-          fi
-
       - name: Cache cargo registry
         uses: actions/cache@v3 
         with:
@@ -43,25 +37,26 @@ jobs:
           set -eo pipefail
           cargo build --release --bins
 
-      - name: Prepare artifacts 
-        shell: bash
+      - name: Package Windows Release
+        shell: pwsh
         run: |
-          set -eo pipefail
-          mkdir -p dist
-          find target/release -maxdepth 1 -type f \( -name "nimble" -o -name "nimble-gui" -o -name "nimble.exe" -o -name "nimble-gui.exe" \) -exec cp {} dist/ \;
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item "target\release\nimble-cli.exe" -Destination "dist\"
+          Copy-Item "target\release\nimble-gui.exe" -Destination "dist\"
+          Compress-Archive -Path "dist\*" -DestinationPath "nimble-windows.zip"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: beta-artifacts
-          path: dist/*
+          path: nimble-windows.zip
           
       - name: Create Beta Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "beta-${GITHUB_SHA::8}" \
-            --title "Beta Release ${GITHUB_SHA::8}" \
-            --prerelease \
-            --notes "Automated beta release from ${GITHUB_REF#refs/heads/}" \
-            dist/*
+          gh release create "beta-${env:GITHUB_SHA.Substring(0,8)}" `
+            --title "Beta Release ${env:GITHUB_SHA.Substring(0,8)}" `
+            --prerelease `
+            --notes "Automated beta release from ${env:GITHUB_REF}" `
+            nimble-windows.zip
