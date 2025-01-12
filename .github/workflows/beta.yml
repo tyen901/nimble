@@ -12,10 +12,19 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Get version from Cargo.toml
+        id: get_version
+        shell: bash
+        run: |
+          version=$(grep '^version = ' Cargo.toml | cut -d '"' -f 2)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -55,8 +64,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "beta-${env:GITHUB_SHA.Substring(0,8)}" `
-            --title "Beta Release ${env:GITHUB_SHA.Substring(0,8)}" `
+          $version = "${{ steps.get_version.outputs.version }}"
+          $tag = "v${version}-beta.${env:GITHUB_SHA.Substring(0,8)}"
+          gh release create $tag `
+            --title "Beta Release ${version}" `
             --prerelease `
-            --notes "Automated beta release from ${env:GITHUB_REF}" `
+            --notes "Beta release ${version} from ${env:GITHUB_REF}" `
             nimble-windows.zip
