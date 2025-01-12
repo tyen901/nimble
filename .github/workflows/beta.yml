@@ -20,6 +20,12 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         
+      - name: Work around spurious network errors
+        run: |
+          if rustc +stable --version --verbose | grep -q '^release: 1\.7[01]\.'; then
+            echo CARGO_HTTP_MULTIPLEXING=false >> $GITHUB_ENV
+          fi
+
       - name: Cache cargo registry
         uses: actions/cache@v3 
         with:
@@ -32,13 +38,17 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Build Release
-        run: cargo build --release --bins
+        shell: bash
+        run: |
+          set -eo pipefail
+          cargo build --release --bins
 
       - name: Prepare artifacts 
+        shell: bash
         run: |
+          set -eo pipefail
           mkdir -p dist
-          cp target/release/nimble{,-gui}{,.exe} dist/ 2>/dev/null || :
-          cp target/release/nimble{,-gui} dist/ 2>/dev/null || :
+          find target/release -maxdepth 1 -type f \( -name "nimble" -o -name "nimble-gui" -o -name "nimble.exe" -o -name "nimble-gui.exe" \) -exec cp {} dist/ \;
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
