@@ -42,7 +42,7 @@ on:
   push:
     branches:
       - master
-      - release/**
+      - release/release
   pull_request:
 
 jobs:
